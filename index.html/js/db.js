@@ -1,21 +1,18 @@
 /* ============================================================
-   DarussalamFest.com — LOCAL DATABASE LAYER (db.js)
+   DarussalamFest.com — OFFLINE FALLBACK LAYER (db.js)
    ------------------------------------------------------------
-   ALL app data (events, schedule, points, results, highlights,
-   settings, members, media, admin session) is stored here in a
-   real local database using IndexedDB — the browser's built-in
-   database. Nothing is kept in localStorage.
-
-   Load this file BEFORE js/app.js.
+   The app's primary database is Supabase (see js/app.js). This
+   file is the safety net: if Supabase is unreachable or not yet
+   set up, data is saved here in a real local database (IndexedDB
+   — the browser's built-in database, NOT localStorage) so the
+   site keeps working. When Supabase comes back, it is used
+   again automatically.
 
    Public API used by app.js:
-     await initDB()          — open/create the database (run once at startup)
-     await dbGet(key)        — read a value (null if missing)
-     await dbSet(key, val)   — write a value
-     await dbDelete(key)     — delete a key
-     dbOnUpdate(cb)          — live-sync: cb(key, value, fromOtherTab)
-                               fired on every write, including from
-                               other open tabs/windows
+     await idbGet(key)            — read (null if missing)
+     await idbSet(key, val)       — write
+     await idbDelete(key)         — delete
+     idbOnUpdate(cb)              — local live-sync (tabs/windows)
    ============================================================ */
 'use strict';
 
@@ -54,7 +51,7 @@ function initDB(){
     };
     req.onsuccess = ()=>{
       _db = req.result;
-      // If another tab deletes/closes the database, reopen on next access.
+      // If another tab closes/deletes the database, reopen on next access.
       _db.onclose = ()=>{ _db = null; };
       resolve(_db);
     };
@@ -80,19 +77,19 @@ function _idbReq(storeName, mode, fn){
 }
 
 /* ---------- public API ---------- */
-async function dbGet(key){
+async function idbGet(key){
   await initDB();
   if(_dbFailed) return (key in _memoryStore) ? _memoryStore[key] : null;
   try{
     const row = await _idbReq(KV_STORE, 'readonly', (s)=> s.get(key));
     return row ? row.value : null;
   }catch(e){
-    console.error('dbGet failed', key, e);
+    console.error('idbGet failed', key, e);
     return (key in _memoryStore) ? _memoryStore[key] : null;
   }
 }
 
-async function dbSet(key, val){
+async function idbSet(key, val){
   await initDB();
   let ok = true;
   if(_dbFailed){
@@ -101,7 +98,7 @@ async function dbSet(key, val){
     try{
       await _idbReq(KV_STORE, 'readwrite', (s)=> s.put({ key, value: val, updated_at: new Date().toISOString() }));
     }catch(e){
-      console.error('dbSet failed', key, e);
+      console.error('idbSet failed', key, e);
       _memoryStore[key] = val;
       ok = false;
     }
@@ -111,7 +108,7 @@ async function dbSet(key, val){
   return ok;
 }
 
-async function dbDelete(key){
+async function idbDelete(key){
   await initDB();
   let ok = true;
   if(_dbFailed){
@@ -120,7 +117,7 @@ async function dbDelete(key){
     try{
       await _idbReq(KV_STORE, 'readwrite', (s)=> s.delete(key));
     }catch(e){
-      console.error('dbDelete failed', key, e);
+      console.error('idbDelete failed', key, e);
       delete _memoryStore[key];
       ok = false;
     }
@@ -136,7 +133,7 @@ function _notify(key, value, fromOtherTab){
 }
 
 /* Register a listener; returns an unsubscribe function. */
-function dbOnUpdate(cb){
+function idbOnUpdate(cb){
   _listeners.push(cb);
   return ()=>{ const i = _listeners.indexOf(cb); if(i>=0) _listeners.splice(i,1); };
 }
