@@ -44,124 +44,36 @@ function defaultTeamColors(){
   return colors;
 }
 
-/* ================= SUPABASE BACKEND =================
-   Real shared backend: every visitor reads/writes the same live database,
-   and changes sync to everyone automatically in real time (see the Realtime
-   subscription set up in boot()). Uploaded photos/videos/songs go to real
-   Supabase Storage (large capacity), not squeezed into a database row. */
-const SUPABASE_URL = 'https://oljodtynwenkgekjtcpz.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_ET-t7Wus-BDsiXBKNwLKoQ_MrnhjSz5';
-const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-/* Default admin login (local fallback).
-   Change these two lines to set a new admin email/password — the Admin page
-   will accept them even if the Supabase account hasn't been created yet. */
+/* ================= LOCAL DATABASE BACKEND =================
+   All data now lives in a real local database (js/db.js, IndexedDB —
+   the browser's built-in database). Nothing uses localStorage and no
+   cloud/backend service is needed. Uploaded photos/videos/songs are
+   stored directly in the local database too. */
 const ADMIN_EMAIL = 'admin@gmail.com';
 const ADMIN_PASSWORD = 'Admin@123';
 
-/* Offline / local-only fallback -------------------------------------------
-   If the Supabase database is unreachable or blocks access (e.g. missing
-   GRANT/RLS setup — see the SQL in README.txt), the app keeps working by
-   storing data in this browser's localStorage. Saves keep working, but
-   changes are only visible in this browser until the real database is
-   opened up; a one-time notice explains this. */
-const LS_PREFIX = 'df:local:';
-let OFFLINE_MODE = false;
-function lsGet(key){
-  try{ const v = localStorage.getItem(LS_PREFIX+key); return v ? JSON.parse(v) : null; }
-  catch(e){ return null; }
-}
-function lsSet(key, val){
-  try{ localStorage.setItem(LS_PREFIX+key, JSON.stringify(val)); return true; }
-  catch(e){ return false; }
-}
-function lsDelete(key){
-  try{ localStorage.removeItem(LS_PREFIX+key); return true; }
-  catch(e){ return false; }
-}
-function enterOfflineMode(){
-  if(OFFLINE_MODE) return;
-  OFFLINE_MODE = true;
-  toast('Database unreachable — changes are saved in this browser only and won\'t sync to other devices.');
-}
-
-async function dbGet(key){
-  try{
-    const { data, error } = await sb.from('kv_store').select('value').eq('key', key).maybeSingle();
-    if(error){ console.error('dbGet failed', key, error); return lsGet(key); }
-    return data ? data.value : null;
-  }catch(e){ console.error('dbGet failed', key, e); return lsGet(key); }
-}
-async function dbSet(key, val){
-  try{
-    const { error } = await sb.from('kv_store').upsert({ key, value: val, updated_at: new Date().toISOString() });
-    if(!error) return true;
-    console.error('dbSet failed', key, error);
-  }catch(e){ console.error('dbSet failed', key, e); }
-  enterOfflineMode();
-  return lsSet(key, val);
-}
-async function dbDelete(key){
-  try{
-    const { error } = await sb.from('kv_store').delete().eq('key', key);
-    if(!error) return true;
-    console.error('dbDelete failed', key, error);
-  }catch(e){ console.error('dbDelete failed', key, e); }
-  return lsDelete(key);
-}
-
 /* ================= MEDIA UPLOADS (photos / videos / songs) =================
-   Uploaded files go to the 'media' Storage bucket and get a real public URL
-   back — no size-cramming, no per-record indirection needed. */
-function dataUriToBlob(dataUri){
-  const [header, base64] = dataUri.split(',');
-  const mimeMatch = header.match(/data:(.*?);base64/);
-  const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
-  const byteChars = atob(base64);
-  const byteNumbers = new Array(byteChars.length);
-  for(let i=0;i<byteChars.length;i++){ byteNumbers[i] = byteChars.charCodeAt(i); }
-  return { blob: new Blob([new Uint8Array(byteNumbers)], { type: mime }), mime };
-}
-async function storePhotoIfNeeded(value){
-  if(!value || typeof value!=='string' || !value.startsWith('data:')) return value;
-  try{
-    const { blob, mime } = dataUriToBlob(value);
-    const ext = (mime.split('/')[1] || 'bin').split('+')[0];
-    const path = 'uploads/'+Date.now()+'-'+Math.random().toString(36).slice(2,8)+'.'+ext;
-    const { error } = await sb.storage.from('media').upload(path, blob, { contentType: mime, upsert: false });
-    if(error){ console.error('upload failed', error); toast('Upload failed — check your connection and try again.'); return value; }
-    const { data } = sb.storage.from('media').getPublicUrl(path);
-    return data.publicUrl;
-  }catch(e){ console.error('upload failed', e); return value; }
-}
-async function maybeDeleteOldBlob(oldValue, newValue){
-  if(oldValue && typeof oldValue==='string' && oldValue.includes('/storage/v1/object/public/media/') && oldValue!==newValue){
-    const path = oldValue.split('/storage/v1/object/public/media/')[1];
-    if(path){ try{ await sb.storage.from('media').remove([path]); }catch(e){ /* non-fatal */ } }
-  }
-}
+   Uploaded files are stored directly in the local database as data URLs —
+   IndexedDB handles large values comfortably, with no size-cramming. */
 function photoSrc(value){ return value || ''; }
 
 /* ================= LIVE SYNC =================
-   Any admin change is pushed to every open browser (parents included)
-   within about a second, with no manual refresh needed. */
+   Any change saved to the local database is pushed to every open view
+   (including other tabs/windows of this browser) within milliseconds,
+   with no manual refresh needed. */
 const KV_KEY_TO_STATE = {
   'df:events':'events', 'df:results':'results', 'df:points':'points',
   'df:highlights':'highlights', 'df:execMembers':'execMembers',
   'df:teamMembers':'teamMembers', 'df:settings':'settings'
 };
 function subscribeLiveSync(){
-  sb.channel('kv_store_live')
-    .on('postgres_changes', { event:'*', schema:'public', table:'kv_store' }, (payload)=>{
-      const row = payload.new || payload.old;
-      if(!row) return;
-      const prop = KV_KEY_TO_STATE[row.key];
-      if(prop && payload.new){
-        STATE[prop] = payload.new.value;
-        render();
-      }
-    })
-    .subscribe();
+  dbOnUpdate((key, value, fromOtherTab)=>{
+    const prop = KV_KEY_TO_STATE[key];
+    if(!prop || value===undefined) return;
+    if(JSON.stringify(STATE[prop]) === JSON.stringify(value)) return; // no change
+    STATE[prop] = value;
+    render();
+  });
 }
 
 /* ================= SEED GENERATION ================= */
@@ -353,6 +265,11 @@ const STATE = {
   winnerFilter: 'all', teamSearch: '', tvViewMode: 'list'
 };
 
+/* Uploaded media is kept as-is (data URL saved straight into the local
+   database). These hooks are kept so all existing call sites keep working. */
+async function storePhotoIfNeeded(value){ return value || ''; }
+async function maybeDeleteOldBlob(){ /* local database — nothing to clean up */ }
+
 async function initializeSampleDataIfEmpty(){
   let count = 0;
   let events = await dbGet('df:events');
@@ -380,40 +297,41 @@ async function initializeSampleDataIfEmpty(){
   return count;
 }
 async function boot(){
-  const { data: sessionData } = await sb.auth.getSession();
-  STATE.isAdmin = !!(sessionData && sessionData.session);
-  sb.auth.onAuthStateChange((_event, session)=>{
-    STATE.isAdmin = !!session;
-    render();
+  await initDB();
+
+  // Restore the admin session from the local database.
+  STATE.isAdmin = !!(await dbGet('df:adminSession'));
+  dbOnUpdate((key, value)=>{
+    if(key==='df:adminSession'){ STATE.isAdmin = !!value; render(); }
   });
 
   let events = await dbGet('df:events');
-  if(!events){ events = generateSeedEvents(); if(STATE.isAdmin) await dbSet('df:events', events); }
+  if(!events){ events = generateSeedEvents(); await dbSet('df:events', events); }
   STATE.events = events;
 
   let results = await dbGet('df:results');
-  if(!results){ results = generateSeedResults(STATE.events); if(STATE.isAdmin) await dbSet('df:results', results); }
+  if(!results){ results = generateSeedResults(STATE.events); await dbSet('df:results', results); }
   STATE.results = results;
 
   let points = await dbGet('df:points');
-  if(!points){ points = generateSeedPoints(STATE.results); if(STATE.isAdmin) await dbSet('df:points', points); }
+  if(!points){ points = generateSeedPoints(STATE.results); await dbSet('df:points', points); }
   STATE.points = points;
 
   let highlights = await dbGet('df:highlights');
-  if(!highlights){ highlights = generateSeedHighlights(); if(STATE.isAdmin) await dbSet('df:highlights', highlights); }
+  if(!highlights){ highlights = generateSeedHighlights(); await dbSet('df:highlights', highlights); }
   STATE.highlights = highlights;
 
   let settings = await dbGet('df:settings');
-  if(!settings){ settings = defaultSettings(); if(STATE.isAdmin) await dbSet('df:settings', settings); }
+  if(!settings){ settings = defaultSettings(); await dbSet('df:settings', settings); }
   STATE.settings = settings;
   if(!STATE.settings.rosterTeams || !STATE.settings.rosterTeams.length){ STATE.settings.rosterTeams = defaultRosterTeams(); }
 
   let execMembers = await dbGet('df:execMembers');
-  if(!execMembers){ execMembers = generateSeedExecMembers(); if(STATE.isAdmin) await dbSet('df:execMembers', execMembers); }
+  if(!execMembers){ execMembers = generateSeedExecMembers(); await dbSet('df:execMembers', execMembers); }
   STATE.execMembers = execMembers;
 
   let teamMembers = await dbGet('df:teamMembers');
-  if(!teamMembers){ teamMembers = generateSeedTeamMembers(STATE.settings.rosterTeams); if(STATE.isAdmin) await dbSet('df:teamMembers', teamMembers); }
+  if(!teamMembers){ teamMembers = generateSeedTeamMembers(STATE.settings.rosterTeams); await dbSet('df:teamMembers', teamMembers); }
   STATE.teamMembers = teamMembers;
 
   subscribeLiveSync();
@@ -2089,7 +2007,7 @@ document.addEventListener('click', async (e)=>{
   if(action==='view-event-rules'){ openEventRulesModal(t.dataset.id); return; }
 
   if(action==='admin-tab'){ STATE.adminTab = t.dataset.tab; render(); return; }
-  if(action==='admin-logout'){ await sb.auth.signOut(); STATE.isAdmin = false; render(); toast('Logged out.'); return; }
+  if(action==='admin-logout'){ await dbDelete('df:adminSession'); STATE.isAdmin = false; render(); toast('Logged out.'); return; }
   if(action==='init-sample-data'){
     t.disabled = true; t.textContent = 'Setting up…';
     const count = await initializeSampleDataIfEmpty();
@@ -2228,19 +2146,15 @@ document.addEventListener('submit', async (e)=>{
   }
 
   if(action==='admin-login'){
-    // 1) Try the real Supabase account first.
-    const { error } = await sb.auth.signInWithPassword({ email: data.email, password: data.password });
-    if(!error){
-      STATE.isAdmin = true; STATE.adminTab='events'; render(); toast('Welcome back!');
-      return;
-    }
-    // 2) Local fallback — accepts the default admin credentials from the
-    //    ADMIN_EMAIL / ADMIN_PASSWORD constants at the top of this file.
+    // Local admin login — credentials come from the ADMIN_EMAIL /
+    // ADMIN_PASSWORD constants at the top of this file. The session is
+    // stored in the local database, so it survives page reloads.
     if(String(data.email||'').trim().toLowerCase() === ADMIN_EMAIL && String(data.password||'') === ADMIN_PASSWORD){
+      await dbSet('df:adminSession', { email: ADMIN_EMAIL, ts: Date.now() });
       STATE.isAdmin = true; STATE.adminTab='events'; render(); toast('Welcome back, Admin!');
       return;
     }
-    toast('Login failed: '+error.message);
+    toast('Login failed: wrong email or password.');
     return;
   }
 
