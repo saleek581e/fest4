@@ -1,23 +1,127 @@
 document.getElementById('footYear').textContent = new Date().getFullYear();
 
 /* ================= CONFIG / CONSTANTS ================= */
-const CATEGORIES = ["Qira'at & Tilawah","Nasheed & Vocal Arts","Calligraphy & Khattati","Debate & Elocution","Athletics & Track","Team Sports","Science & Innovation","Quiz & General Knowledge","Arts & Crafts","Drama & Skits"];
+const CATEGORIES = ["Sub Junior","Junior","Senior","General"];
 const GROUPS = ["Junior Boys","Junior Girls","Senior Boys","Senior Girls"];
 const ROUNDS = ["Heat 1","Heat 2","Final"];
 const VENUES = ["Main Auditorium","Sports Ground","Masjid Hall","Library Hall","Multipurpose Hall","Classroom Block A"];
 const TIMES = ["08:00","09:30","11:00","13:00","14:30","16:00"];
 const CATEGORY_VENUES = {
-  "Qira'at & Tilawah": ["Masjid Hall","Main Auditorium"],
-  "Nasheed & Vocal Arts": ["Main Auditorium","Multipurpose Hall"],
-  "Calligraphy & Khattati": ["Library Hall","Classroom Block A"],
-  "Debate & Elocution": ["Main Auditorium","Library Hall"],
-  "Athletics & Track": ["Sports Ground","Sports Ground"],
-  "Team Sports": ["Sports Ground","Multipurpose Hall"],
-  "Science & Innovation": ["Library Hall","Classroom Block A"],
-  "Quiz & General Knowledge": ["Classroom Block A","Main Auditorium"],
-  "Arts & Crafts": ["Classroom Block A","Library Hall"],
-  "Drama & Skits": ["Multipurpose Hall","Main Auditorium"]
+  "Sub Junior": ["Masjid Hall","Main Auditorium"],
+  "Junior": ["Multipurpose Hall","Library Hall"],
+  "Senior": ["Main Auditorium","Masjid Hall"],
+  "General": ["Main Auditorium","Multipurpose Hall"]
 };
+/* Official programme list — [code, name, category, type] where type:
+   ST = Stage (Individual), SG = Stage (Group), NS = Non-Stage (Individual), NG = Non-Stage (Group) */
+const OFFICIAL_PROGRAMS = [
+  /* ---- 1. SUB JUNIOR ---- */
+  ['01','HIFL','Sub Junior','ST'],
+  ['02','QIRAATH','Sub Junior','ST'],
+  ['03','SONG KND','Sub Junior','ST'],
+  ['04','CHAIN STORY','Sub Junior','ST'],
+  ['05','SONG MLM','Sub Junior','ST'],
+  ['06','SONG BEARY','Sub Junior','ST'],
+  ['07','SPEECH KND/BRY','Sub Junior','ST'],
+  ['08','SPEECH ENG','Sub Junior','ST'],
+  ['09','STORY TELLING','Sub Junior','ST'],
+  ['10','NAANU KANNADIKA','Sub Junior','ST'],
+  ['11','HAND WRITING ENG','Sub Junior','NS'],
+  ['12','DIARY MAKING','Sub Junior','NS'],
+  ['13','VISUALITH','Sub Junior','NS'],
+  ['14','MEMORY TEST','Sub Junior','NS'],
+  ['15','DICT SEARCH','Sub Junior','NS'],
+  ['16','PENCIL DRAWING','Sub Junior','NS'],
+  ['17','RUBIK CUBE','Sub Junior','NS'],
+  ['18','AZAN','Sub Junior','ST'],
+  ['19','CROSS WORD','Sub Junior','NS'],
+  ['21','SWARF IQ','Sub Junior','NS'],
+  ['22','MATHS TALENT','Sub Junior','NS'],
+  /* ---- 2. JUNIOR ---- */
+  ['01','QIRAATH','Junior','ST'],
+  ['02','HIFL','Junior','ST'],
+  ['03','AZAN','Junior','ST'],
+  ['04','SONG KND','Junior','ST'],
+  ['05','SONG URD','Junior','ST'],
+  ['06','SONG ARB','Junior','ST'],
+  ['07','SPEECH KND','Junior','ST'],
+  ['08','SPEECH ENG','Junior','ST'],
+  ['09','SPEECH BRY','Junior','ST'],
+  ['10','VAAZ [BRY]','Junior','ST'],
+  ['11','DEVOTIONAL SONG','Junior','ST'],
+  ['12','NAANU KANNADIKA','Junior','ST'],
+  ['13','SWARF TALENT','Junior','NS'],
+  ['14','ESSAY KND','Junior','NS'],
+  ['15','ESSAY ENG','Junior','NS'],
+  ['16','LNG MMRY TEST','Junior','NS'],
+  ['17','DICT SEARCH [ARB]','Junior','NS'],
+  ['18','AL MUTHARAKKIB','Junior','NS'],
+  ['19','WAR OF WORDS [ENG]','Junior','NS'],
+  ['20','MULAFALATH','Junior','NS'],
+  ['21','TRANS ARB-MLM','Junior','NS'],
+  ['22','TRANS ENG-KND','Junior','NS'],
+  ['23','SPELLING B','Junior','NS'],
+  ['24','COLOUR DRAWING','Junior','NS'],
+  ['25','QUIZ','Junior','NS'],
+  ['26','POSTER MAKING','Junior','NS'],
+  ['27','READING HINDI','Junior','NS'],
+  ['28','AL IBANATH','Junior','NS'],
+  ['29','CALLIGRAPHY','Junior','NS'],
+  ['30','BOOK REVIEW','Junior','NS'],
+  ['31','PROOF READING','Junior','NS'],
+  /* ---- 3. SENIOR ---- */
+  ['01','QIRAATH','Senior','ST'],
+  ['02','ANNOUNCEMENT','Senior','ST'],
+  ['03','SONG MLM','Senior','ST'],
+  ['04','SONG KND','Senior','ST'],
+  ['05','SONG URD','Senior','ST'],
+  ['06','SONG ARB','Senior','ST'],
+  ['07','SPEECH BEARY','Senior','ST'],
+  ['08','SPEECH ARB','Senior','ST'],
+  ['09','MOTIVATIONAL TALK','Senior','ST'],
+  ['10','SPEECH ENG','Senior','ST'],
+  ['11','SPEECH URDU','Senior','ST'],
+  ['12','PICK N TALK','Senior','ST'],
+  ['13','VAAZ [BRY/MLM]','Senior','ST'],
+  ['14','DEVOTIONAL SONG','Senior','ST'],
+  ['15','HIFL','Senior','NS'],
+  ['16','THE GENIUS','Senior','NS'],
+  ['17','WAR OF WORDS ENG','Senior','NS'],
+  ['18','GEO GIANT','Senior','NS'],
+  ['19','POSTER DESIGN','Senior','NS'],
+  ['20','PIC POETRY KND','Senior','NS'],
+  ['21','THAHLEEL UL IBARATH','Senior','NS'],
+  ['22','ESSAY ENG','Senior','NS'],
+  ['23','ESSAY KND','Senior','NS'],
+  ['24','TRANS ENG-KND','Senior','NS'],
+  ['25','TRANS ARB-MLM','Senior','NS'],
+  ['26','QUIZ','Senior','NS'],
+  ['27','HEAD NOTE','Senior','NS'],
+  ['28','CALLIGRAPHY','Senior','NS'],
+  ['29','LIVE EXTOMPHORE','Senior','NS'],
+  ['30','WAR OF WORD ARB','Senior','NS'],
+  ['31','BOOK REVIEW','Senior','NS'],
+  ['32','QUTHUBA','Senior','NS'],
+  /* ---- 4. GENERAL (Stage & Mixed) ---- */
+  ['01','PODCAST','General','ST'],
+  ['02','THALASHE MASALA','General','NS'],
+  ['03','DEBATE','General','NS'],
+  ['04','SOOFI SONG','General','ST'],
+  ['05','MASHUP SONG','General','ST'],
+  ['06','MALAPAAT','General','ST'],
+  ['07','SPEECH N SONG','General','ST'],
+  ['08','GROUP SONG [S.B]','General','SG'],
+  ['09','MASHUP SONG [J]','General','ST'],
+  ['10','BURDHA N QAWALI','General','SG'],
+  ['11','MUSHAARA','General','ST'],
+  ['12','NEWSPAPER MAKING','General','NG'],
+  ['13','COLLAGE','General','NG'],
+  ['14','GARDEN MAKING','General','NG'],
+  ['15','HADEETH QUIZ [J]','General','NS'],
+  ['16','REVIEW THE SUNNAH','General','NS'],
+  ['17','FACE TO FACE INT.','General','ST'],
+  ['18','TEACHING PRESENT. THANAWU','General','ST']
+];
 const FEST_DATES = ["2026-07-22","2026-07-23","2026-07-24","2026-07-25","2026-07-26","2026-07-27","2026-07-28"];
 const HOUSES = [
   {name:"Zumurrud House", color:"#146B52"},
@@ -32,11 +136,11 @@ const EXEC_CATEGORIES = [
   {key:'volunteers', label:'Volunteers'},
   {key:'teamLeaders', label:'Team Leaders'}
 ];
-const MEMBER_CATEGORIES = ['Senior','Junior','Sub-Junior'];
-const STAGE_INDIVIDUAL_PROGRAMS = ['Song','Qira\'at Recitation','Speech','Solo Nasheed'];
-const STAGE_TEAM_PROGRAMS = ['Group Song','Group Nasheed','Choir','Drama'];
-const OFFSTAGE_INDIVIDUAL_PROGRAMS = ['Essay Writing','Calligraphy','Painting','Quiz'];
-const OFFSTAGE_TEAM_PROGRAMS = ['Podcast','Documentary','Wall Magazine','Group Quiz'];
+const MEMBER_CATEGORIES = ['Senior','Junior','Sub Junior'];
+const STAGE_INDIVIDUAL_PROGRAMS = OFFICIAL_PROGRAMS.filter(p=>p[2]==='General' && (p[3]==='ST'||p[3]==='SG')).map(p=>p[1]);
+const STAGE_TEAM_PROGRAMS = OFFICIAL_PROGRAMS.filter(p=>p[3]==='SG').map(p=>p[1]);
+const OFFSTAGE_INDIVIDUAL_PROGRAMS = OFFICIAL_PROGRAMS.filter(p=>p[2]==='General' && (p[3]==='NS'||p[3]==='NG')).map(p=>p[1]);
+const OFFSTAGE_TEAM_PROGRAMS = OFFICIAL_PROGRAMS.filter(p=>p[3]==='NG').map(p=>p[1]);
 function defaultRosterTeams(){ return ['Al-Furqan','An-Noor','Al-Huda']; }
 function defaultTeamColors(){
   const colors = { 'Al-Furqan':'#146B52', 'An-Noor':'#A23B2E', 'Al-Huda':'#B8892B' };
@@ -176,24 +280,22 @@ function subscribeLiveSync(){
 function pad(n){ return n<10 ? '0'+n : ''+n; }
 function generateSeedEvents(){
   const events = []; let idx = 0;
-  CATEGORIES.forEach((cat, ci)=>{
-    GROUPS.forEach((grp, gi)=>{
-      ROUNDS.forEach((rnd, ri)=>{
-        idx++;
-        const dayIndex = (ci + gi + ri) % FEST_DATES.length;
-        const venuePair = CATEGORY_VENUES[cat];
-        const venue = venuePair[(gi+ri) % venuePair.length];
-        const time = TIMES[(gi*3+ri) % TIMES.length];
-        events.push({
-          id: 'ev-'+pad(idx),
-          name: cat+' — '+grp+' ('+rnd+')',
-          category: cat,
-          date: FEST_DATES[dayIndex],
-          time: time,
-          venue: venue,
-          statusOverride: ''
-        });
-      });
+  const TYPE_LABEL = { ST:'Stage — Individual', SG:'Stage — Group', NS:'Non-Stage — Individual', NG:'Non-Stage — Group' };
+  OFFICIAL_PROGRAMS.forEach(([code, name, cat, type], i)=>{
+    idx++;
+    const dayIndex = i % FEST_DATES.length;
+    const venuePair = CATEGORY_VENUES[cat];
+    const venue = venuePair[i % venuePair.length];
+    const time = TIMES[i % TIMES.length];
+    events.push({
+      id: 'ev-'+code+'-'+cat.charAt(0)+(cat.indexOf(' ')>0?cat.charAt(cat.indexOf(' ')+1):''),
+      name: code+' — '+name+' ['+cat+']',
+      category: cat,
+      type: TYPE_LABEL[type] || type,
+      date: FEST_DATES[dayIndex],
+      time: time,
+      venue: venue,
+      statusOverride: ''
     });
   });
   return events;
@@ -244,9 +346,9 @@ function generateSeedPoints(results){
   return HOUSES.map(h => {
     const T = totals[h.name]||0;
     const genIndividual = Math.round(T*0.4), genGroup = Math.round(T*0.35), genGeneral = Math.max(0, T-genIndividual-genGroup);
-    const catSenior = Math.round(T*0.45), catJunior = Math.round(T*0.35), catSubJunior = Math.max(0, T-catSenior-catJunior);
+    const catSenior = Math.round(T*0.4), catJunior = Math.round(T*0.3), catSubJunior = Math.round(T*0.2), catGeneral = Math.max(0, T-catSenior-catJunior-catSubJunior);
     const evtStage = Math.round(T*0.55), evtNonStage = Math.max(0, T-evtStage);
-    return { team: h.name, points: T, genIndividual, genGroup, genGeneral, catSenior, catJunior, catSubJunior, evtStage, evtNonStage };
+    return { team: h.name, points: T, genIndividual, genGroup, genGeneral, catSenior, catJunior, catSubJunior, catGeneral, evtStage, evtNonStage };
   });
 }
 
@@ -366,6 +468,19 @@ const STATE = {
 async function storePhotoIfNeeded(value){ return value || ''; }
 async function maybeDeleteOldBlob(){ /* local database — nothing to clean up */ }
 
+/* One-time migration: replace the old demo event list (old category names)
+   with the official 4-category programme list. Runs once per browser. */
+async function migrateEventsToOfficialPrograms(){
+  if(await idbGet('df:migrated_official_programs')) return;
+  const events = await dbGet('df:events');
+  if(events && events.some(e=>!CATEGORIES.includes(e.category))){
+    const fresh = generateSeedEvents();
+    await dbSet('df:events', fresh);
+    STATE.events = fresh;
+  }
+  await idbSet('df:migrated_official_programs', new Date().toISOString());
+}
+
 async function initializeSampleDataIfEmpty(){
   let count = 0;
   let events = await dbGet('df:events');
@@ -393,6 +508,7 @@ async function initializeSampleDataIfEmpty(){
   return count;
 }
 async function boot(){
+  await migrateEventsToOfficialPrograms();
   let events = await dbGet('df:events');
   if(!events){ events = generateSeedEvents(); if(!sb || STATE.isAdmin) await dbSet('df:events', events); }
   STATE.events = events;
@@ -779,7 +895,8 @@ function pointsCardHtml(p, rank){
         <div class="pb-title">Category-wise</div>
         ${catRowHtml('Senior','catSenior',p.catSenior)}
         ${catRowHtml('Junior','catJunior',p.catJunior)}
-        ${catRowHtml('Sub-Junior','catSubJunior',p.catSubJunior)}
+        ${catRowHtml('Sub Junior','catSubJunior',p.catSubJunior)}
+        ${catRowHtml('General','catGeneral',p.catGeneral||0)}
       </div>
       <div class="pb-block">
         <div class="pb-title">Event Type</div>
@@ -791,7 +908,7 @@ function pointsCardHtml(p, rank){
   </div>`;
 }
 function categoryLeadersStripHtml(){
-  const fields = [{key:'catSenior', label:'Senior'},{key:'catJunior', label:'Junior'},{key:'catSubJunior', label:'Sub-Junior'}];
+  const fields = [{key:'catSenior', label:'Senior'},{key:'catJunior', label:'Junior'},{key:'catSubJunior', label:'Sub Junior'},{key:'catGeneral', label:'General'}];
   return `<div class="grid grid-3" style="margin-bottom:26px;">
     ${fields.map(f=>{
       const max = categoryFieldMax(f.key);
@@ -1500,11 +1617,12 @@ function adminEvents(){
   return `
   <div class="admin-toolbar"><h3 style="margin:0;">Events (${STATE.events.length})</h3><button class="btn btn-primary btn-sm" data-action="add-event">+ Add Event</button></div>
   <div class="table-wrap"><table>
-    <thead><tr><th>Name</th><th>Category</th><th>Date</th><th>Time</th><th>Venue</th><th>Status</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>Category</th><th>Date</th><th>Time</th><th>Venue</th><th>Participants</th><th>Status</th><th></th></tr></thead>
     <tbody>
       ${sorted.map(e=>`
         <tr>
           <td>${esc(e.name)}</td><td>${esc(e.category)}</td><td>${e.date}</td><td>${fmtTime(e.time)}</td><td>${esc(e.venue)}</td>
+          <td>${e.participants ? esc(e.participants) : '—'}</td>
           <td><span class="badge ${badgeClass(computeStatus(e))}">${computeStatus(e)}</span></td>
           <td><button class="icon-btn" data-action="edit-event" data-id="${e.id}">Edit</button><button class="icon-btn" data-action="delete-event" data-id="${e.id}">Delete</button></td>
         </tr>`).join('')}
@@ -1800,14 +1918,37 @@ const EVENT_FIELDS = [
   {key:'rules', label:'Event-Specific Rules (one per line, optional)', type:'textarea'},
   {key:'statusOverride', label:'Manual Status Override', type:'select', options:['','Upcoming','Ongoing','Completed']}
 ];
+function eventProgramOf(name, cat){
+  const n = String(name||'').trim().toUpperCase();
+  if(!n || !cat) return '';
+  const match = OFFICIAL_PROGRAMS.find(p=>p[2]===cat && (p[1].toUpperCase()===n || n.includes(p[1].toUpperCase())));
+  return match ? match[1] : '';
+}
 function openEventModal(id){
   const isEdit = !!id;
   const ev = isEdit ? STATE.events.find(e=>e.id===id) : { name:'', category:CATEGORIES[0], date:FEST_DATES[0], time:TIMES[0], venue:VENUES[0], participants:'', rules:'', statusOverride:'' };
+  const category = ev.category || CATEGORIES[0];
+  const programs = OFFICIAL_PROGRAMS.filter(p=>p[2]===category);
+  const currentProgram = eventProgramOf(ev.name, category);
+  const isCustom = !!(ev.name && !currentProgram);
+  const fields = EVENT_FIELDS.filter(f=>f.key!=='name' && f.key!=='category');
   showModal(`
     <button class="modal-close" data-action="close-modal">×</button>
     <h3>${isEdit?'Edit':'Add'} Event</h3>
     <form data-action="save-event" data-id="${id||''}">
-      ${EVENT_FIELDS.map(f=>fieldHtml(f, ev[f.key])).join('')}
+      <div class="field">
+        <label>Category (shows this category's events below)</label>
+        <select name="category" id="evmCategory">${CATEGORIES.map(c=>`<option value="${esc(c)}" ${c===category?'selected':''}>${esc(c)}</option>`).join('')}</select>
+      </div>
+      <div class="field">
+        <label>Event Name</label>
+        <select name="evmProgram" id="evmProgram">${programs.map(p=>`<option value="${esc(p[1])}" ${p[1]===currentProgram?'selected':''}>${esc(p[1])}</option>`).join('')}</select>
+      </div>
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:8px;font-weight:500;"><input type="checkbox" id="evmCustom" ${isCustom?'checked':''}> Not in the list? Type the name manually</label>
+        <input type="text" name="evmCustomName" id="evmCustomName" placeholder="e.g. XYZ Competition" value="${isCustom?esc(ev.name):''}" style="margin-top:8px;${isCustom?'':'display:none;'}">
+      </div>
+      ${fields.map(f=>fieldHtml(f, ev[f.key])).join('')}
       <div class="modal-actions">
         ${isEdit?'<button type="button" class="btn btn-danger btn-sm" data-action="delete-event" data-id="'+id+'">Delete</button>':''}
         <button type="submit" class="btn btn-primary btn-sm">Save Event</button>
@@ -1824,13 +1965,14 @@ const POINTS_FIELDS = [
   {key:'genGeneral', label:'General — General Points', type:'number'},
   {key:'catSenior', label:'Category-wise — Senior', type:'number'},
   {key:'catJunior', label:'Category-wise — Junior', type:'number'},
-  {key:'catSubJunior', label:'Category-wise — Sub-Junior', type:'number'},
+  {key:'catSubJunior', label:'Category-wise — Sub Junior', type:'number'},
+  {key:'catGeneral', label:'Category-wise — General', type:'number'},
   {key:'evtStage', label:'Event Type — Stage Events', type:'number'},
   {key:'evtNonStage', label:'Event Type — Off-Stage Events', type:'number'}
 ];
 function openPointsModal(team){
   const isEdit = !!team;
-  const p = isEdit ? STATE.points.find(x=>x.team===team) : { team:'', points:0, genIndividual:0, genGroup:0, genGeneral:0, catSenior:0, catJunior:0, catSubJunior:0, evtStage:0, evtNonStage:0 };
+  const p = isEdit ? STATE.points.find(x=>x.team===team) : { team:'', points:0, genIndividual:0, genGroup:0, genGeneral:0, catSenior:0, catJunior:0, catSubJunior:0, catGeneral:0, evtStage:0, evtNonStage:0 };
   const cols = STATE.settings.customPointColumns || [];
   const fields = POINTS_FIELDS.concat(cols.map(c=>({key:c.key, label:c.label, type:'text'})));
   showModal(`
@@ -2251,6 +2393,17 @@ document.addEventListener('submit', async (e)=>{
 
   if(action==='save-event'){
     const id = form.dataset.id;
+    const customChecked = !!(form.querySelector('[name="evmCustom"]')||{}).checked;
+    const customName = String((form.querySelector('[name="evmCustomName"]')||{}).value||'').trim();
+    const program = String((form.querySelector('[name="evmProgram"]')||{}).value||'').trim();
+    if(customChecked && customName){
+      data.name = customName;
+    } else {
+      const prog = OFFICIAL_PROGRAMS.find(p=>p[1]===program && p[2]===data.category);
+      data.name = prog ? (prog[0]+' — '+prog[1]+' ['+prog[2]+']') : program;
+    }
+    delete data.evmProgram; delete data.evmCustom; delete data.evmCustomName;
+    if(!data.name){ toast('Please choose or type the event name.'); return; }
     if(id){
       const ev = STATE.events.find(x=>x.id===id);
       Object.assign(ev, data);
@@ -2264,7 +2417,7 @@ document.addEventListener('submit', async (e)=>{
 
   if(action==='save-points'){
     const orig = form.dataset.orig;
-    ['points','genIndividual','genGroup','genGeneral','catSenior','catJunior','catSubJunior','evtStage','evtNonStage'].forEach(k=>{
+    ['points','genIndividual','genGroup','genGeneral','catSenior','catJunior','catSubJunior','catGeneral','evtStage','evtNonStage'].forEach(k=>{
       if(k in data) data[k] = Number(data[k])||0;
     });
     if(orig){
@@ -2436,6 +2589,20 @@ document.addEventListener('input', (e)=>{
 });
 document.addEventListener('change', (e)=>{
   if(e.target.id==='evCategory'){ STATE.filters.category = e.target.value; renderEventsOnly(); }
+  if(e.target.id==='evmCategory'){
+    const cat = e.target.value;
+    const sel = document.getElementById('evmProgram');
+    const opts = OFFICIAL_PROGRAMS.filter(p=>p[2]===cat).map(p=>p[1]);
+    if(sel) sel.innerHTML = opts.map(p=>`<option value="${esc(p)}">${esc(p)}</option>`).join('');
+    const cb = document.getElementById('evmCustom');
+    if(cb) cb.checked = false;
+    const ci = document.getElementById('evmCustomName');
+    if(ci){ ci.value=''; ci.style.display='none'; }
+  }
+  if(e.target.id==='evmCustom'){
+    const ci = document.getElementById('evmCustomName');
+    if(ci) ci.style.display = e.target.checked ? '' : 'none';
+  }
   if(e.target.id==='evDate'){ STATE.filters.date = e.target.value; renderEventsOnly(); }
   if(e.target.id==='evVenue'){ STATE.filters.venue = e.target.value; renderEventsOnly(); }
   if(e.target.dataset && e.target.dataset.action==='set-team-color'){

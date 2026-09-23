@@ -202,6 +202,21 @@ tr.pb-leader td{ background:var(--gold-pale); font-weight:600; }
 .stat-mini b{ display:block; font-family:var(--font-mono); font-size:1.5rem; color:var(--green-deep); }
 .stat-mini span{ font-size:.75rem; color:var(--ink-soft); }
 
+@media (max-width:820px){
+  .admin-wrap{ flex-direction:column; gap:14px; }
+  .admin-side{ width:100%; flex-shrink:0; position:static; display:flex; gap:6px; overflow-x:auto; padding:10px; -webkit-overflow-scrolling:touch; }
+  .admin-side button{ flex:0 0 auto; width:auto; white-space:nowrap; text-align:center; padding:9px 14px; margin-bottom:0; }
+  .admin-main{ width:100%; }
+}
+@media (max-width:560px){
+  .modal{ padding:18px; max-height:92vh; }
+  .modal-backdrop{ padding:10px; }
+  .modal-actions{ flex-direction:column-reverse; }
+  .modal-actions .btn{ width:100%; text-align:center; }
+  .admin-toolbar h3{ font-size:1rem; }
+  .table-wrap{ margin:0 -2px; }
+}
+
 /* about / contact */
 .about-grid{ display:grid; grid-template-columns:1.2fr .8fr; gap:36px; align-items:start; }
 @media (max-width:860px){ .about-grid{ grid-template-columns:1fr; } }
