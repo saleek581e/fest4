@@ -697,7 +697,6 @@ function defaultSettings(){
       exec:{type:'color', value:'#FBF7EE'},
       teams:{type:'color', value:'#FBF7EE'},
       about:{type:'color', value:'#FBF7EE'},
-      contact:{type:'color', value:'#FBF7EE'},
       register:{type:'color', value:'#FBF7EE'}
     }
   };
@@ -1410,7 +1409,7 @@ function render(){
   } else {
     app.style.background = '';
   }
-  const renderers = { home:renderHome, events:renderEvents, schedule:renderSchedule, points:renderPoints, results:renderResults, winners:renderWinners, highlights:renderHighlights, exec:renderExec, teams:renderTeamsPage, about:renderAbout, contact:renderContact, admin:renderAdmin, tv:renderTV };
+  const renderers = { home:renderHome, events:renderEvents, schedule:renderSchedule, points:renderPoints, results:renderResults, winners:renderWinners, highlights:renderHighlights, exec:renderExec, teams:renderTeamsPage, about:renderAbout, admin:renderAdmin, tv:renderTV };
   let html;
   if(route==='register' || route.indexOf('register/')===0){
     const slug = route.indexOf('register/')===0 ? route.slice('register/'.length).split('?')[0] : '';
@@ -2571,33 +2570,6 @@ function renderAbout(){
           <span>🏟️ ${VENUES.length} venues across campus</span>
           <span>🏆 ${CATEGORIES.length} event categories</span>
           <span>👥 ${HOUSES.length} competing houses</span>
-        </div>
-      </div>
-    </div>
-  </section>`;
-}
-
-/* ================= CONTACT ================= */
-function renderContact(){
-  return `
-  <section class="section">
-    <div class="container about-grid">
-      <div class="card reveal">
-        <h3>Send a message</h3>
-        <form data-action="contact-form">
-          <div class="field"><label>Name</label><input type="text" required></div>
-          <div class="field"><label>Email or Phone Number</label><input type="text" required placeholder="you@example.com or +1 555 123 4567"></div>
-          <div class="field"><label>Social Media Account <span style="font-weight:400;color:var(--ink-soft);">(optional)</span></label><input type="text" placeholder="@yourhandle on Instagram, Facebook, etc."></div>
-          <div class="field"><label>Message</label><textarea required></textarea></div>
-          <button class="btn btn-primary" type="submit">Send Message</button>
-        </form>
-      </div>
-      <div class="card reveal">
-        <h3>Contact Details</h3>
-        <div class="event-meta" style="gap:12px;">
-          <span>✉️ ${esc(STATE.settings.contactEmail)}</span>
-          <span>📞 ${esc(STATE.settings.contactPhone)}</span>
-          <span>📍 ${esc(STATE.settings.contactAddress)}</span>
         </div>
       </div>
     </div>
@@ -3886,10 +3858,6 @@ document.addEventListener('submit', async (e)=>{
     }
     toast('Login failed: wrong email or password.');
     return;
-  }
-
-  if(action==='contact-form'){
-    form.reset(); toast('Message sent — thank you! (Demo form)'); return;
   }
 
   if(action==='save-event'){
