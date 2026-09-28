@@ -480,10 +480,14 @@ function eventTypeOf(ev){
 function eventStatusOf(ev){
   return EVENT_STATUSES.includes(ev && ev.status) ? ev.status : 'ACTIVE';
 }
+/* Live = the admin keeps the event ACTIVE. The fest date passing does
+   NOT hide or complete an event: official programmes stay listed (and
+   keep accepting registrations) until the admin sets INACTIVE/CANCELLED
+   or closes registration. computeStatus() stays display-only — badges
+   and home counters — so past-dated events keep showing in the Events
+   section after a student successfully registers for them. */
 function isEventLive(ev){
-  const st = eventStatusOf(ev);
-  if(st==='CANCELLED' || st==='INACTIVE') return false;
-  return computeStatus(ev) !== 'Completed';
+  return eventStatusOf(ev)==='ACTIVE';
 }
 function isEventCancelled(ev){ return eventStatusOf(ev)==='CANCELLED'; }
 /* Public-facing list: cancelled / inactive events never appear, and
@@ -1440,7 +1444,9 @@ function renderHome(){
   const completed = live.filter(e=>computeStatus(e)==='Completed').length;
   const open = registrableEvents().filter(e=>eventRegWindowOpen(e)).length;
   const featured = STATE.highlights.find(h=>h.featured==='yes') || STATE.highlights[0];
-  const featuredEvents = live.filter(e=>computeStatus(e)!=='Completed').slice(0,6);
+  /* Featured shows live events regardless of date — past-dated
+     programmes stay visible until the admin deactivates them. */
+  const featuredEvents = live.slice(0,6);
 
   return `
   <section class="hero" style="${heroStyle}">
