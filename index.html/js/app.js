@@ -130,8 +130,10 @@ const OFFICIAL_PROGRAMS = [
 const FEST_DATES = ["2026-07-22","2026-07-23","2026-07-24","2026-07-25","2026-07-26","2026-07-27","2026-07-28"];
 
 /* ---- THANAWUUSH'26 · program & registration model ----
-   Categories that carry stage / non-stage participation limits. */
-const PARTICIPATION_CATEGORIES = ["Sub Junior","Junior","Senior"];
+   Categories offered in the registration form. General is included:
+   it carries open/individual programmes and its limits default to
+   no minimums (admin-editable in Settings → Participation Limits). */
+const PARTICIPATION_CATEGORIES = ["Sub Junior","Junior","Senior","General"];
 const EVENT_TYPES = ["Stage","Non-Stage"];
 const EVENT_STATUSES = ["ACTIVE","INACTIVE","CANCELLED"];
 const REG_STATUSES = ["OPEN","CLOSED","CANCELLED"];
@@ -140,7 +142,8 @@ const REG_STATUS_VALUES = ["PENDING","APPROVED","REJECTED"];
 const DEFAULT_PARTICIPATION_LIMITS = {
   "Sub Junior":{ minStage:5, minNonStage:5, maxTotal:12 },
   "Junior":     { minStage:1, minNonStage:2, maxTotal:10 },
-  "Senior":     { minStage:2, minNonStage:3, maxTotal:12 }
+  "Senior":     { minStage:2, minNonStage:3, maxTotal:12 },
+  "General":    { minStage:0, minNonStage:0, maxTotal:12 }
 };
 const HOUSES = [
   {name:"BAHRAYN", color:"#0E3B2E"},
@@ -486,7 +489,15 @@ function isEventCancelled(ev){ return eventStatusOf(ev)==='CANCELLED'; }
 /* Public-facing list: cancelled / inactive events never appear, and
    they can never be registered for. */
 function visibleEvents(){ return STATE.events.filter(isEventLive); }
-function registrableEvents(){ return STATE.events.filter(isEventLive); }
+/* Events a student may register for. Deliberately NOT date-gated:
+   eligibility is controlled by the admin via event status (ACTIVE) and
+   the registration flag (OPEN/CLOSED) — e.g. official programmes keep
+   taking registrations after their fest date has passed, until the
+   admin closes them. Callers still apply eventRegWindowOpen() so any
+   explicit regStart/regEnd window set by the admin is honoured. */
+function registrableEvents(){
+  return STATE.events.filter(ev=>eventStatusOf(ev)==='ACTIVE' && eventRegStatus(ev)==='OPEN');
+}
 function eventSlug(ev){ return ev.slug || slugify(ev.name); }
 function eventBySlug(slug){
   if(!slug) return null;
@@ -997,7 +1008,7 @@ function validateRegistration(payload, opts){
 
   /* --- category eligibility --- */
   const category = payload.category;
-  if(!PARTICIPATION_CATEGORIES.includes(category)) errors.push('Please choose a valid category: Sub Junior, Junior or Senior.');
+  if(!PARTICIPATION_CATEGORIES.includes(category)) errors.push('Please choose a valid category: Sub Junior, Junior, Senior or General.');
 
   /* --- required fields --- */
   if(!String(payload.name||'').trim()) errors.push('Student name is required.');
@@ -1125,7 +1136,7 @@ function openShareEventModal(ev){
    REGISTRATION PAGE  (#/register  and  #/register/<event-slug>)
    ============================================================ */
 function registrationBannerHtml(){
-  const open = visibleEvents().filter(e=>eventRegWindowOpen(e));
+  const open = registrableEvents().filter(e=>eventRegWindowOpen(e));
   return `<div class="reg-banner">
     <h2>📝 Register for ${esc(festName())}</h2>
     <p>${open.length} programme${open.length===1?'':'s'} currently open for online registration. Choose an event, fill the form, and your entry reaches the admin panel instantly.</p>
@@ -1163,6 +1174,34 @@ function progressItemHtml(label, val, min, max, ok){
     <div class="prog-track"><div class="prog-fill ${full?'full':(ok?'done':'')}" style="width:${pct}%"></div></div>
   </div>`;
 }
+/* Event-details card for the register page. Extracted so the change
+   handlers below can re-render it when the selection changes. */
+function registerEventDetailsHtml(ev){
+  if(!ev) return '';
+  return `<div class="card" style="margin-top:16px;">
+    <h4 style="margin-top:0;">Event details</h4>
+    <div class="event-meta">
+      <span>📅 ${fmtDate(ev.date)}</span>
+      <span>🕐 ${fmtTime(ev.time)}</span>
+      <span>📍 ${esc(ev.venue)}</span>
+      <span>${ev.maxParticipants ? '👥 Maximum '+esc(ev.maxParticipants)+' participants' : '👥 No participant limit'}</span>
+    </div>
+    ${ev.rules ? `<h4 style="margin:16px 0 6px;font-size:.9rem;">Rules</h4><ul style="font-size:.82rem;color:var(--ink-soft);padding-left:18px;margin:0;">${ev.rules.split('\n').filter(Boolean).map(r=>`<li>${esc(r.trim())}</li>`).join('')}</ul>` : ''}
+    <div class="share-row" style="margin-top:16px;">
+      <button class="share-btn wa" href="${esc(whatsappShareUrl(eventShareText(ev)))}" target="_blank" rel="noopener">📲 WhatsApp</button>
+      <button class="share-btn" data-action="share-reg-link" data-id="${esc(ev.id)}">📤 Share</button>
+    </div>
+  </div>`;
+}
+/* Surgical updates (no full render — that would wipe the details the
+   student has already typed). */
+function updateRegEventDetails(){
+  const evSel = document.getElementById('regEvent');
+  if(!evSel) return;
+  const ev = STATE.events.find(x=>x.id===evSel.value) || null;
+  const wrap = document.getElementById('regEventDetailsWrap');
+  if(wrap) wrap.innerHTML = registerEventDetailsHtml(ev);
+}
 function renderRegister(slug){
   if(STATE.regSuccess) return renderRegisterSuccess(STATE.regSuccess);
   const ev = slug ? eventBySlug(slug) : null;
@@ -1185,11 +1224,26 @@ function renderRegister(slug){
       </div>
     </div></section>`;
   }
-  const open = visibleEvents().filter(e=>eventRegWindowOpen(e));
-  const events = ev ? [ev] : open;
+  /* Registration is gated by the admin's registration status
+     (OPEN/CLOSED) and event status, NOT by the event date — past-dated
+     programmes must stay registrable until the admin closes them. */
+  const open = registrableEvents().filter(e=>eventRegWindowOpen(e));
+  /* Category first: the student picks a category, then the Programme
+     dropdown offers only that category's open programmes. Default to
+     the previously chosen category, falling back to the first one
+     that actually has open programmes. */
+  let cat;
+  if(ev){
+    cat = ev.category;
+  } else {
+    cat = PARTICIPATION_CATEGORIES.includes(STATE.regCategory) ? STATE.regCategory : '';
+    if(!cat || !open.some(x=>x.category===cat)){
+      cat = PARTICIPATION_CATEGORIES.find(c=>open.some(x=>x.category===c)) || PARTICIPATION_CATEGORIES[0];
+    }
+  }
+  const events = ev ? [ev] : open.filter(e=>e.category===cat);
   const sel = ev ? ev.id : (events[0] ? events[0].id : '');
-  const selEvent = events.find(e=>e.id===sel);
-  const cat = selEvent ? selEvent.category : STATE.regCategory;
+  const selEvent = STATE.events.find(e=>e.id===sel) || null;
   const teams = STATE.settings.rosterTeams || [];
 
   return `<section class="section">
@@ -1197,19 +1251,27 @@ function renderRegister(slug){
       <div class="section-head">
         <div class="eyebrow">${esc(festSubtitle())}</div>
         <h2>📝 ${ev ? esc(ev.programName || ev.name) : 'Online Registration'}</h2>
-        <p>${ev ? esc(ev.description || 'Fill the form below to register for this programme.') : 'Choose a programme, fill in your details, and submit. Your entry is saved to the database and visible in the admin panel immediately.'}</p>
+        <p>${ev ? esc(ev.description || 'Fill the form below to register for this programme.') : 'Choose a category, pick a programme, fill in your details, and submit. Your entry is saved to the database and visible in the admin panel immediately.'}</p>
         <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
           ${ev ? `<span class="chip chip-open">${esc(eventTypeOf(ev))}</span><span class="chip chip-stage">${esc(ev.category)}</span>` : ''}
         </div>
       </div>
-      ${!events.length ? '<div class="empty-state" style="padding:60px 10px;">No programmes are currently open for registration. Please check back soon or contact the coordinator.</div>' : `
+      ${!open.length ? '<div class="empty-state" style="padding:60px 10px;">No programmes are currently open for registration. Please check back soon or contact the coordinator.</div>' : `
       <div class="reg-grid">
         <div class="reg-form">
           <form data-action="submit-registration" data-event-id="${esc(sel)}">
             <div class="field">
+              <label>Category <span class="req">*</span></label>
+              <select name="category" id="regCategorySelect" required>
+                ${PARTICIPATION_CATEGORIES.map(c=>`<option value="${esc(c)}" ${c===cat?'selected':''}>${esc(c)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
               <label>Programme <span class="req">*</span></label>
               <select name="eventId" id="regEvent" required>
-                ${events.map(e=>`<option value="${esc(e.id)}" ${e.id===sel?'selected':''}>${esc(e.name)} — ${esc(eventTypeOf(e))}</option>`).join('')}
+                ${events.length
+                  ? events.map(e=>`<option value="${esc(e.id)}" ${e.id===sel?'selected':''}>${esc(e.name)} — ${esc(eventTypeOf(e))}</option>`).join('')
+                  : `<option value="">— No open programmes in ${esc(cat)} —</option>`}
               </select>
             </div>
             <div class="field-row">
@@ -1224,32 +1286,26 @@ function renderRegister(slug){
             </div>
             <div class="field-row">
               <div class="field">
-                <label>Category <span class="req">*</span></label>
-                <select name="category" id="regCategorySelect" required>
-                  ${PARTICIPATION_CATEGORIES.map(c=>`<option value="${esc(c)}" ${c===cat?'selected':''}>${esc(c)}</option>`).join('')}
-                </select>
-              </div>
-              <div class="field">
                 <label>Team / House <span class="req">*</span></label>
                 <select name="team" required>
                   <option value="">— Select team —</option>
                   ${teams.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}
                 </select>
               </div>
-            </div>
-            <div class="field-row">
               <div class="field">
                 <label>Class / Grade</label>
                 <input type="text" name="klass" placeholder="e.g. 9">
               </div>
+            </div>
+            <div class="field-row">
               <div class="field">
                 <label>Phone (WhatsApp)</label>
                 <input type="tel" name="phone" placeholder="e.g. +91 98765 43210" autocomplete="tel">
               </div>
-            </div>
-            <div class="field">
-              <label>Email <span style="font-weight:400;color:var(--ink-soft);">(optional)</span></label>
-              <input type="email" name="email" placeholder="you@example.com" autocomplete="email">
+              <div class="field">
+                <label>Email <span style="font-weight:400;color:var(--ink-soft);">(optional)</span></label>
+                <input type="email" name="email" placeholder="you@example.com" autocomplete="email">
+              </div>
             </div>
             <div class="field">
               <label>Notes <span style="font-weight:400;color:var(--ink-soft);">(optional)</span></label>
@@ -1264,20 +1320,7 @@ function renderRegister(slug){
         </div>
         <div>
           ${registrationProgressHtml(cat, '')}
-          ${selEvent ? `<div class="card" style="margin-top:16px;">
-            <h4 style="margin-top:0;">Event details</h4>
-            <div class="event-meta">
-              <span>📅 ${fmtDate(selEvent.date)}</span>
-              <span>🕐 ${fmtTime(selEvent.time)}</span>
-              <span>📍 ${esc(selEvent.venue)}</span>
-              <span>${selEvent.maxParticipants ? '👥 Maximum '+esc(selEvent.maxParticipants)+' participants' : '👥 No participant limit'}</span>
-            </div>
-            ${selEvent.rules ? `<h4 style="margin:16px 0 6px;font-size:.9rem;">Rules</h4><ul style="font-size:.82rem;color:var(--ink-soft);padding-left:18px;margin:0;">${selEvent.rules.split('\n').filter(Boolean).map(r=>`<li>${esc(r.trim())}</li>`).join('')}</ul>` : ''}
-            <div class="share-row" style="margin-top:16px;">
-              <button class="share-btn wa" href="${esc(whatsappShareUrl(eventShareText(selEvent)))}" target="_blank" rel="noopener">📲 WhatsApp</button>
-              <button class="share-btn" data-action="share-reg-link" data-id="${esc(selEvent.id)}">📤 Share</button>
-            </div>
-          </div>` : ''}
+          <div id="regEventDetailsWrap">${registerEventDetailsHtml(selEvent)}</div>
         </div>
       </div>`}
     </div>
@@ -1395,7 +1438,7 @@ function renderHome(){
   const upcoming = live.filter(e=>computeStatus(e)==='Upcoming').length;
   const ongoing = live.filter(e=>computeStatus(e)==='Ongoing').length;
   const completed = live.filter(e=>computeStatus(e)==='Completed').length;
-  const open = live.filter(e=>eventRegWindowOpen(e)).length;
+  const open = registrableEvents().filter(e=>eventRegWindowOpen(e)).length;
   const featured = STATE.highlights.find(h=>h.featured==='yes') || STATE.highlights[0];
   const featuredEvents = live.filter(e=>computeStatus(e)!=='Completed').slice(0,6);
 
@@ -1448,7 +1491,7 @@ function renderHome(){
       <div class="section-head">
         <div class="eyebrow">Individual Ranking</div>
         <h2>🥇 ${esc(heading('homeIndividual','Individual Leaderboard'))}</h2>
-        <p>Top three in each category — Senior, Junior and Sub Junior, ranked separately.</p>
+        <p>Top three in each category — Senior, Junior, Sub Junior and General, ranked separately.</p>
       </div>
       <div class="cat-tabs" id="indCatTabs">
         ${PARTICIPATION_CATEGORIES.map(c=>`<button class="cat-tab ${STATE.individualCategory===c?'active':''}" data-action="ind-category" data-val="${esc(c)}">${esc(c)}</button>`).join('')}
@@ -4141,6 +4184,30 @@ document.addEventListener('change', (e)=>{
   if(e.target.id==='regAdminCategory'){ STATE.regFilters.category = e.target.value; renderAdminMainOnly(); }
   if(e.target.id==='regAdminTeam'){ STATE.regFilters.team = e.target.value; renderAdminMainOnly(); }
   if(e.target.id==='regAdminStatus'){ STATE.regFilters.status = e.target.value; renderAdminMainOnly(); }
+
+  /* ---- student registration form: category drives the programme list ---- */
+  if(e.target.id==='regCategorySelect'){
+    const cat = e.target.value;
+    STATE.regCategory = cat;
+    const evSel = document.getElementById('regEvent');
+    const catEvents = registrableEvents().filter(x=>eventRegWindowOpen(x) && x.category===cat);
+    if(evSel){
+      evSel.innerHTML = catEvents.length
+        ? catEvents.map(x=>`<option value="${esc(x.id)}">${esc(x.name)} — ${esc(eventTypeOf(x))}</option>`).join('')
+        : `<option value="">— No open programmes in ${esc(cat)} —</option>`;
+      if(catEvents.length) evSel.value = catEvents[0].id;
+      const form = evSel.closest('form');
+      if(form) form.dataset.eventId = evSel.value;
+    }
+    const prog = document.getElementById('regProgressHost');
+    if(prog) prog.outerHTML = registrationProgressHtml(cat, '');
+    updateRegEventDetails();
+  }
+  if(e.target.id==='regEvent'){
+    const form = e.target.closest('form');
+    if(form) form.dataset.eventId = e.target.value;
+    updateRegEventDetails();
+  }
   if(e.target.dataset && e.target.dataset.action==='set-team-color'){
     const team = e.target.dataset.team;
     STATE.settings.teamColors = STATE.settings.teamColors || {};
