@@ -32,12 +32,17 @@ const OFFICIAL_PROGRAMS = [
   ['14','MEMORY TEST','Sub Junior','NS'],
   ['15','DICT SEARCH','Sub Junior','NS'],
   ['16','PENCIL DRAWING','Sub Junior','NS'],
-  ['17','RUBIK CUBE','Sub Junior','NS'],
+  /* ['17','RUBIK CUBE','Sub Junior','NS'] — withdrawn from the fest.
+     The record is preserved (code 17 stays reserved) and the migration
+     below flips its status to CANCELLED instead of deleting it, so any
+     historical registrations or results remain intact. */
+
   ['18','AZAN','Sub Junior','ST'],
   ['19','CROSS WORD','Sub Junior','NS'],
   ['21','SWARF IQ','Sub Junior','NS'],
   ['22','MATHS TALENT','Sub Junior','NS'],
   /* ---- 2. JUNIOR ---- */
+
   ['01','QIRAATH','Junior','ST'],
   ['02','HIFL','Junior','ST'],
   ['03','AZAN','Junior','ST'],
@@ -123,12 +128,27 @@ const OFFICIAL_PROGRAMS = [
   ['18','TEACHING PRESENT. THANAWU','General','ST']
 ];
 const FEST_DATES = ["2026-07-22","2026-07-23","2026-07-24","2026-07-25","2026-07-26","2026-07-27","2026-07-28"];
+
+/* ---- THANAWUUSH'26 · program & registration model ----
+   Categories that carry stage / non-stage participation limits. */
+const PARTICIPATION_CATEGORIES = ["Sub Junior","Junior","Senior"];
+const EVENT_TYPES = ["Stage","Non-Stage"];
+const EVENT_STATUSES = ["ACTIVE","INACTIVE","CANCELLED"];
+const REG_STATUSES = ["OPEN","CLOSED","CANCELLED"];
+const REG_STATUS_VALUES = ["PENDING","APPROVED","REJECTED"];
+/* Editable from Admin → Settings → Participation Limits. */
+const DEFAULT_PARTICIPATION_LIMITS = {
+  "Sub Junior":{ minStage:5, minNonStage:5, maxTotal:12 },
+  "Junior":     { minStage:1, minNonStage:2, maxTotal:10 },
+  "Senior":     { minStage:2, minNonStage:3, maxTotal:12 }
+};
 const HOUSES = [
-  {name:"Zumurrud House", color:"#146B52"},
-  {name:"Yaqut House", color:"#A23B2E"},
-  {name:"Firoza House", color:"#2C7DA0"},
-  {name:"Dhahab House", color:"#B8892B"}
+  {name:"BAHRAYN", color:"#0E3B2E"},
+  {name:"SADDAYN", color:"#8E1F2C"},
+  {name:"SADAFAYN", color:"#14614A"},
+  {name:"NAJDAYN", color:"#C9A227"}
 ];
+
 const EXEC_CATEGORIES = [
   {key:'directors', label:'Directors'},
   {key:'officials', label:'Officials'},
@@ -141,12 +161,34 @@ const STAGE_INDIVIDUAL_PROGRAMS = OFFICIAL_PROGRAMS.filter(p=>p[2]==='General' &
 const STAGE_TEAM_PROGRAMS = OFFICIAL_PROGRAMS.filter(p=>p[3]==='SG').map(p=>p[1]);
 const OFFSTAGE_INDIVIDUAL_PROGRAMS = OFFICIAL_PROGRAMS.filter(p=>p[2]==='General' && (p[3]==='NS'||p[3]==='NG')).map(p=>p[1]);
 const OFFSTAGE_TEAM_PROGRAMS = OFFICIAL_PROGRAMS.filter(p=>p[3]==='NG').map(p=>p[1]);
-function defaultRosterTeams(){ return ['Al-Furqan','An-Noor','Al-Huda']; }
+function defaultRosterTeams(){ return ['BAHRAYN','SADDAYN','SADAFAYN','NAJDAYN']; }
 function defaultTeamColors(){
-  const colors = { 'Al-Furqan':'#146B52', 'An-Noor':'#A23B2E', 'Al-Huda':'#B8892B' };
+  const colors = {};
   HOUSES.forEach(h=>{ colors[h.name] = h.color; });
   return colors;
 }
+
+/* Default festival identity — every value is editable from
+   Admin → Branding and served dynamically to the frontend. */
+const DEFAULT_FEST_BRANDING = {
+  festName: "Thanawuush'26",
+  festSubtitle: 'Darussalam Arts Fest 2k26',
+  festTagline: 'The Clash of Talent',
+  theme: {
+    primary:      '#0E3B2E',
+    primarySoft:  '#14614A',
+    accent:       '#C9A227',
+    accentSoft:   '#F0D27A',
+    clash:        '#8E1F2C',
+    background:   '#FBF7EE'
+  }
+};
+/* Built-in SVG wordmark — a placeholder identity, NOT a hard-coded
+   logo. Uploading a real logo in Admin → Branding replaces it
+   everywhere at once (nav, hero, footer, share cards). */
+const DEFAULT_FEST_LOGO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 200" role="img" aria-label="Thanawuush 26 — The Clash of Talent"><defs><linearGradient id="twg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#F0D27A"/><stop offset="55%" stop-color="#C9A227"/><stop offset="100%" stop-color="#9A7615"/></linearGradient></defs><g fill="none" stroke="url(#twg)" stroke-width="7" stroke-linejoin="round"><path d="M28 44 L96 44 L62 106 Z"/><path d="M92 44 L92 106"/></g><text x="126" y="96" font-family="Georgia,serif" font-size="66" font-weight="700" fill="#F0D27A">THANAWUU<tspan fill="#C9A227">SH</tspan></text><text x="30" y="152" font-family="Georgia,serif" font-size="30" letter-spacing="6" fill="#F8EECF">ARTS FEST 2K26</text><text x="30" y="182" font-family="Georgia,serif" font-size="19" font-style="italic" fill="#C9A227">The Clash of Talent</text></svg>';
+const FEST_LOGO_DATA_URL = 'data:image/svg+xml,' + encodeURIComponent(DEFAULT_FEST_LOGO_SVG);
+
 
 /* ================= SUPABASE BACKEND =================
    Real shared backend: every visitor reads/writes the same live database,
@@ -250,7 +292,8 @@ function photoSrc(value){ return value || ''; }
 const KV_KEY_TO_STATE = {
   'df:events':'events', 'df:results':'results', 'df:points':'points',
   'df:highlights':'highlights', 'df:execMembers':'execMembers',
-  'df:teamMembers':'teamMembers', 'df:settings':'settings'
+  'df:teamMembers':'teamMembers', 'df:settings':'settings',
+  'df:registrations':'registrations'
 };
 function subscribeLiveSync(){
   if(sb){
@@ -279,7 +322,8 @@ function subscribeLiveSync(){
 /* ================= SEED GENERATION ================= */
 function pad(n){ return n<10 ? '0'+n : ''+n; }
 function generateSeedEvents(){
-  const events = []; let idx = 0;
+  const events = [];
+  let idx = 0;
   const TYPE_LABEL = { ST:'Stage — Individual', SG:'Stage — Group', NS:'Non-Stage — Individual', NG:'Non-Stage — Group' };
   OFFICIAL_PROGRAMS.forEach(([code, name, cat, type], i)=>{
     idx++;
@@ -287,19 +331,111 @@ function generateSeedEvents(){
     const venuePair = CATEGORY_VENUES[cat];
     const venue = venuePair[i % venuePair.length];
     const time = TIMES[i % TIMES.length];
+    const programName = name;
+    const fullName = code+' — '+name+' ['+cat+']';
     events.push({
       id: 'ev-'+code+'-'+cat.charAt(0)+(cat.indexOf(' ')>0?cat.charAt(cat.indexOf(' ')+1):''),
-      name: code+' — '+name+' ['+cat+']',
+      name: fullName,
+      programName: programName,
+      slug: slugify(programName+'-'+cat),
+      eventCode: code,
       category: cat,
       type: TYPE_LABEL[type] || type,
+      eventType: (type==='ST'||type==='SG') ? 'Stage' : 'Non-Stage',
       date: FEST_DATES[dayIndex],
       time: time,
       venue: venue,
+      status: 'ACTIVE',
+      regStatus: 'OPEN',
+      regStart: '',
+      regEnd: '',
+      maxParticipants: '',
+      description: programDescription(name, cat, (type==='ST'||type==='SG') ? 'Stage' : 'Non-Stage'),
+      rules: programRules(name, cat),
+      participants: '',
       statusOverride: ''
     });
   });
+  applyCancelledPrograms(events);
   return events;
 }
+
+/* Rubik's Cube is withdrawn — flagged, never deleted. */
+const CANCELLED_PROGRAMS = ['RUBIK CUBE'];
+function applyCancelledPrograms(events){
+  events.forEach(ev=>{
+    if(CANCELLED_PROGRAMS.some(p=>String(ev.programName||ev.name||'').toUpperCase().indexOf(p)>=0)){
+      ev.status = 'CANCELLED';
+      ev.regStatus = 'CANCELLED';
+      ev.cancelledReason = 'Withdrawn from Thanawuush\'26 — this event is no longer part of the fest.';
+    }
+  });
+  return events;
+}
+
+/* Enriches an existing events document in place with the fields the
+   new registration / participation system relies on. Purely additive:
+   existing keys are never overwritten and no record is removed. */
+function migrateEventRecord(ev){
+  if(!ev || typeof ev!=='object') return ev;
+  if(!ev.programName){
+    const n = String(ev.name||'');
+    const m = n.match(/^\s*(\d+)\s*—\s*(.+?)\s*\[(.+?)\]\s*$/);
+    ev.programName = m ? m[2] : n.replace(/\[[^\]]*\]/g,'').trim();
+    if(m && !ev.eventCode) ev.eventCode = m[1];
+  }
+  if(!ev.eventCode){
+    const m2 = String(ev.name||'').match(/^\s*(\d+)/);
+    if(m2) ev.eventCode = m2[1];
+  }
+  if(!ev.eventType) ev.eventType = eventTypeOf(ev);
+  if(!EVENT_STATUSES.includes(ev.status)) ev.status = 'ACTIVE';
+  if(!REG_STATUSES.includes(ev.regStatus)) ev.regStatus = ev.status==='ACTIVE' ? 'OPEN' : 'CANCELLED';
+  if(!ev.slug) ev.slug = slugify((ev.programName||ev.name)+'-'+(ev.category||''));
+  if(!('regStart' in ev)) ev.regStart = '';
+  if(!('regEnd' in ev)) ev.regEnd = '';
+  if(!('maxParticipants' in ev)) ev.maxParticipants = '';
+  if(!('description' in ev)) ev.description = '';
+  if(!('rules' in ev)) ev.rules = '';
+  return ev;
+}
+function migrateEvents(list){
+  if(!Array.isArray(list)) return list;
+  list.forEach(migrateEventRecord);
+  applyCancelledPrograms(list);
+  return list;
+}
+
+/* Fills any settings key introduced after the document was written. */
+function migrateSettings(s){
+  if(!s || typeof s!=='object') return defaultSettings();
+  const d = defaultSettings();
+  Object.keys(d).forEach(k=>{ if(!(k in s) || s[k]===null || s[k]===undefined) s[k] = d[k]; });
+  if(!s.participationLimits || typeof s.participationLimits!=='object') s.participationLimits = JSON.parse(JSON.stringify(DEFAULT_PARTICIPATION_LIMITS));
+  PARTICIPATION_CATEGORIES.forEach(cat=>{
+    if(!s.participationLimits[cat] || typeof s.participationLimits[cat]!=='object') s.participationLimits[cat] = JSON.parse(JSON.stringify(DEFAULT_PARTICIPATION_LIMITS[cat]));
+  });
+  if(!s.theme || typeof s.theme!=='object') s.theme = Object.assign({}, DEFAULT_FEST_BRANDING.theme);
+  Object.keys(DEFAULT_FEST_BRANDING.theme).forEach(k=>{ if(!s.theme[k]) s.theme[k] = DEFAULT_FEST_BRANDING.theme[k]; });
+  if(!s.rosterTeams || !s.rosterTeams.length) s.rosterTeams = defaultRosterTeams();
+  if(!s.teamColors || typeof s.teamColors!=='object') s.teamColors = defaultTeamColors();
+  s.rosterTeams.forEach(t=>{ if(!s.teamColors[t]) s.teamColors[t] = '#0E3B2E'; });
+  if(!s.pageBg || typeof s.pageBg!=='object') s.pageBg = d.pageBg;
+  if(!s.pageHeadings || typeof s.pageHeadings!=='object') s.pageHeadings = d.pageHeadings;
+  return s;
+}
+function programDescription(name, cat, type){
+  return name + ' — a ' + String(type||'Stage').toLowerCase() + ' programme for the ' + cat + ' category at Thanawuush\'26, Darussalam Arts Fest 2k26.';
+}
+function programRules(name, cat){
+  return [
+    'Report to the venue 30 minutes before the scheduled time with your chest number.',
+    'Only registered ' + cat + ' participants may compete in this programme.',
+    'Time limit and judging criteria are announced by the coordinator on the day.',
+    'Malpractice or unfair conduct leads to immediate disqualification.'
+  ].join('\n');
+}
+
 
 function computeStatus(ev){
   if(ev.statusOverride){ return ev.statusOverride; }
@@ -309,6 +445,94 @@ function computeStatus(ev){
   if(evDate.getTime() === today.getTime()) return 'Ongoing';
   return 'Upcoming';
 }
+
+/* ============================================================
+   EVENT MODEL — STAGE / NON-STAGE, STATUS & REGISTRATION
+   ------------------------------------------------------------
+   Events written by earlier versions of the app only had
+   {name, category, type, date, time, venue, …}. Everything below
+   is *derived*, so no data is lost and nothing needs re-entering.
+   ============================================================ */
+function slugify(s){
+  return String(s||'').toLowerCase().normalize('NFKD').replace(/[^\w\s-]/g,'').trim()
+    .replace(/[\s_]+/g,'-').replace(/-+/g,'-').slice(0,80) || 'event';
+}
+function programOfEvent(ev){
+  /* the official programme record this event came from, if any */
+  if(!ev) return null;
+  const n = String(ev.programName || ev.name || '').toUpperCase();
+  const cat = ev.category;
+  return OFFICIAL_PROGRAMS.find(p=>p[2]===cat && p[1].toUpperCase()===n) || null;
+}
+/* ST / SG → Stage · NS / NG → Non-Stage. */
+function eventTypeOf(ev){
+  if(!ev) return 'Stage';
+  if(EVENT_TYPES.includes(ev.eventType)) return ev.eventType;
+  const prog = programOfEvent(ev);
+  if(prog) return (prog[3]==='ST'||prog[3]==='SG') ? 'Stage' : 'Non-Stage';
+  const t = String(ev.type||'').toLowerCase();
+  if(t.indexOf('non-stage')>=0 || t.indexOf('off-stage')>=0 || t==='ns' || t==='ng') return 'Non-Stage';
+  return 'Stage';
+}
+function eventStatusOf(ev){
+  return EVENT_STATUSES.includes(ev && ev.status) ? ev.status : 'ACTIVE';
+}
+function isEventLive(ev){
+  const st = eventStatusOf(ev);
+  if(st==='CANCELLED' || st==='INACTIVE') return false;
+  return computeStatus(ev) !== 'Completed';
+}
+function isEventCancelled(ev){ return eventStatusOf(ev)==='CANCELLED'; }
+/* Public-facing list: cancelled / inactive events never appear, and
+   they can never be registered for. */
+function visibleEvents(){ return STATE.events.filter(isEventLive); }
+function registrableEvents(){ return STATE.events.filter(isEventLive); }
+function eventSlug(ev){ return ev.slug || slugify(ev.name); }
+function eventBySlug(slug){
+  if(!slug) return null;
+  const s = String(slug).toLowerCase();
+  return STATE.events.find(e=>String(e.slug||'').toLowerCase()===s)
+      || STATE.events.find(e=>slugify(e.name)===s)
+      || STATE.events.find(e=>String(e.name||'').toLowerCase()===s)
+      || null;
+}
+function eventRegStatus(ev){
+  if(eventStatusOf(ev)!=='ACTIVE') return 'CANCELLED';
+  const st = ev.regStatus;
+  if(st && REG_STATUSES.includes(st)) return st;
+  return 'OPEN';
+}
+function eventRegWindowOpen(ev){
+  const st = eventRegStatus(ev);
+  if(st!=='OPEN') return false;
+  const today = new Date(); today.setHours(0,0,0,0);
+  if(ev.regStart){
+    const s = new Date(ev.regStart+'T00:00:00');
+    if(s > today) return false;
+  }
+  if(ev.regEnd){
+    const e = new Date(ev.regEnd+'T23:59:59');
+    if(e < today) return false;
+  }
+  return true;
+}
+function eventRegClosedReason(ev){
+  const st = eventRegStatus(ev);
+  if(st==='CANCELLED') return 'This event has been cancelled.';
+  if(st==='CLOSED') return 'Online registration for this event is closed.';
+  const today = new Date(); today.setHours(0,0,0,0);
+  if(ev.regStart && new Date(ev.regStart+'T00:00:00') > today) return 'Registration opens on ' + fmtDate(ev.regStart) + '.';
+  if(ev.regEnd && new Date(ev.regEnd+'T23:59:59') < today) return 'Registration closed on ' + fmtDate(ev.regEnd) + '.';
+  if(!isEventLive(ev)) return 'This event is no longer accepting registrations.';
+  if(eventRegCount(ev) >= (Number(ev.maxParticipants)||Infinity))
+    return 'This event has reached its maximum of ' + ev.maxParticipants + ' participants.';
+  return '';
+}
+function eventRegCount(ev){
+  return STATE.registrations.filter(r=>r.eventId===ev.id && r.status!=='REJECTED').length;
+}
+function eventsOfCategory(cat){ return visibleEvents().filter(e=>e.category===cat); }
+
 
 function avatarUrl(seed){
   return 'https://api.dicebear.com/7.x/initials/svg?seed='+encodeURIComponent(seed)+'&backgroundColor=146b52,0b3d2e,b8892b&fontFamily=Georgia';
@@ -416,14 +640,22 @@ function generateSeedTeamMembers(rosterTeams){
 
 function defaultSettings(){
   return {
-    siteTitle: 'DarussalamFest.com',
-    heroHeading: 'DarussalamFest.com',
-    tabTitle: 'DarussalamFest.com',
-    tagline: "Darussalam Institution's Annual Festival — a week of recitation, sport, art and knowledge, competed for house and honor.",
-    aboutText: "DarussalamFest is the annual inter-house festival of Darussalam Institution, bringing together Qira'at, athletics, debate, science, arts and drama into a single week of friendly competition. Four houses — Zumurrud, Yaqut, Firoza and Dhahab — compete across 100+ events for the House Championship Shield, judged on skill, sportsmanship and adab.",
-    contactEmail: 'festival@darussalamfest.com',
-    contactPhone: '+1 (555) 019-2026',
+    siteTitle: "Thanawuush'26 — Darussalam Arts Fest 2k26",
+    heroHeading: "Thanawuush'26",
+    tabTitle: "Thanawuush'26 — Darussalam Arts Fest 2k26",
+    tagline: 'The Clash of Talent',
+    aboutText: "Thanawuush'26 is the annual inter-house arts festival of Darussalam Institution, bringing together Qira'at, recitation, debate, art, calligraphy and elocution into a single week of friendly competition. The houses — Bahrayn, Saddayn, Sad afayn and Najdayn — compete across 100+ programmes for the House Championship Shield, judged on skill, sportsmanship and adab.",
+    contactEmail: 'festival@darussalam.org',
+    contactPhone: '+91 00000 00000',
     contactAddress: 'Darussalam Institution, Education Avenue, Your City',
+    /* ---- fest branding (Admin → Branding) ---- */
+    festName: DEFAULT_FEST_BRANDING.festName,
+    festSubtitle: DEFAULT_FEST_BRANDING.festSubtitle,
+    festTagline: DEFAULT_FEST_BRANDING.festTagline,
+    theme: Object.assign({}, DEFAULT_FEST_BRANDING.theme),
+    useDefaultLogo: true,
+    /* ---- category-wise participation limits (Admin → Settings) ---- */
+    participationLimits: JSON.parse(JSON.stringify(DEFAULT_PARTICIPATION_LIMITS)),
     logoUrl: '',
     customPointColumns: [],
     pointsMusicUrl: '',
@@ -433,34 +665,87 @@ function defaultSettings(){
     pageHeadings: {
       events:'Festival Events', schedule:'Festival Schedule', points:'Points Table',
       results:'Event Results', winners:'Winners Gallery', highlights:'Highlights',
-      exec:'Executive Members', teams:'Teams', about:'DarussalamFest',
-      homeFeatured:'Featured Highlight', homePoints:'Current Points Table'
+      exec:'Executive Members', teams:'Teams', about:'Thanawuush\'26',
+      homeFeatured:'Featured Highlight', homePoints:'Team Leaderboard',
+      homeIndividual:'Individual Leaderboard', homeRegister:'Online Registration'
     },
     teamColors: defaultTeamColors(),
     rosterTeams: defaultRosterTeams(),
-    hero: { type:'color', colorValue:'linear-gradient(160deg,#0B3D2E,#146B52 55%,#0B3D2E)', imageUrl:'', videoUrl:'', autoplay:false },
+    hero: { type:'color', colorValue:'linear-gradient(160deg,#0E3B2E,#14614A 55%,#072019)', imageUrl:'', videoUrl:'', autoplay:false },
     pageBg: {
-      events:{type:'color', value:'#FAF7EF'},
-      schedule:{type:'color', value:'#FAF7EF'},
-      points:{type:'color', value:'#FAF7EF'},
-      results:{type:'color', value:'#FAF7EF'},
-      winners:{type:'color', value:'#FAF7EF'},
-      highlights:{type:'color', value:'#FAF7EF'},
-      exec:{type:'color', value:'#FAF7EF'},
-      teams:{type:'color', value:'#FAF7EF'},
-      about:{type:'color', value:'#FAF7EF'},
-      contact:{type:'color', value:'#FAF7EF'}
+      events:{type:'color', value:'#FBF7EE'},
+      schedule:{type:'color', value:'#FBF7EE'},
+      points:{type:'color', value:'#FBF7EE'},
+      results:{type:'color', value:'#FBF7EE'},
+      winners:{type:'color', value:'#FBF7EE'},
+      highlights:{type:'color', value:'#FBF7EE'},
+      exec:{type:'color', value:'#FBF7EE'},
+      teams:{type:'color', value:'#FBF7EE'},
+      about:{type:'color', value:'#FBF7EE'},
+      contact:{type:'color', value:'#FBF7EE'},
+      register:{type:'color', value:'#FBF7EE'}
     }
   };
 }
 
+/* ---- settings helpers: always read through a normaliser so a
+   settings document written by an older version of the app still
+   behaves correctly (no field is ever assumed to exist). ---- */
+function limits(){
+  const stored = (STATE.settings && STATE.settings.participationLimits) || {};
+  const out = {};
+  PARTICIPATION_CATEGORIES.forEach(cat=>{
+    const d = DEFAULT_PARTICIPATION_LIMITS[cat];
+    const s = stored[cat] || {};
+    const num = (v,fb)=>{ const n = Number(v); return isFinite(n) && n>=0 ? Math.round(n) : fb; };
+    out[cat] = { minStage:num(s.minStage,d.minStage), minNonStage:num(s.minNonStage,d.minNonStage), maxTotal:num(s.maxTotal,d.maxTotal) };
+  });
+  return out;
+}
+function festName(){ return (STATE.settings && STATE.settings.festName) || DEFAULT_FEST_BRANDING.festName; }
+function festSubtitle(){ return (STATE.settings && STATE.settings.festSubtitle) || DEFAULT_FEST_BRANDING.festSubtitle; }
+function festTagline(){ return (STATE.settings && STATE.settings.festTagline) || DEFAULT_FEST_BRANDING.festTagline; }
+/* The uploaded logo wins; otherwise the built-in placeholder mark. */
+function festLogoSrc(){
+  const u = STATE.settings && STATE.settings.logoUrl;
+  return u ? photoSrc(u) : FEST_LOGO_DATA_URL;
+}
+/* Push the admin-configurable palette onto <html> as CSS variables,
+   so the whole site re-themes without touching any stylesheet. */
+function applyTheme(){
+  const t = Object.assign({}, DEFAULT_FEST_BRANDING.theme, (STATE.settings && STATE.settings.theme) || {});
+  const map = {
+    '--tw-primary':t.primary, '--tw-primary-soft':t.primarySoft, '--tw-accent':t.accent,
+    '--tw-accent-soft':t.accentSoft, '--tw-clash':t.clash, '--tw-bg':t.background
+  };
+  const root = document.documentElement;
+  Object.keys(map).forEach(k=>{ if(map[k]) root.style.setProperty(k, map[k]); });
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if(meta && t.primary) meta.setAttribute('content', t.primary);
+}
+/* Splits a title so the '26 gets the gold gradient treatment. */
+function festNameHtml(size){
+  const n = festName();
+  const m = n.match(/^(.*?)(\d{2,4})$/);
+  const cls = size ? ' style="font-size:'+size+'"' : '';
+  if(m) return esc(m[1]) + '<span class="tw-year">'+esc(m[2])+'</span>';
+  return esc(n);
+}
+
+
 /* ================= GLOBAL STATE ================= */
 const STATE = {
   events: [], results: [], points: [], highlights: [], settings: null,
-  execMembers: null, teamMembers: [],
+  execMembers: null, teamMembers: [], registrations: [],
   isAdmin: false, adminTab: 'events',
   filters: { q:'', category:'', date:'', venue:'' },
-  winnerFilter: 'all', teamSearch: '', tvViewMode: 'list'
+  resultFilters: { q:'', category:'', event:'', team:'' },
+  regFilters: { q:'', event:'', category:'', team:'', status:'' },
+  regCategory: PARTICIPATION_CATEGORIES[2],   // Senior — shown in the register form progress panel
+  regSuccess: null,                          // confirmation payload after a successful submit
+  individualCategory: PARTICIPATION_CATEGORIES[2],
+  winnerFilter: 'all', teamSearch: '', tvViewMode: 'list',
+  showCancelled: false, adminTeamSel: ''
 };
 
 /* Uploaded media is kept as-is (data URL saved straight into the local
@@ -481,6 +766,23 @@ async function migrateEventsToOfficialPrograms(){
   await idbSet('df:migrated_official_programs', new Date().toISOString());
 }
 
+/* Additive migration — runs on every boot, writes only when something
+   actually changed, and never removes an event, result or point. */
+async function runDataMigrations(){
+  let dirty = false;
+  if(Array.isArray(STATE.events)){
+    const before = JSON.stringify(STATE.events);
+    migrateEvents(STATE.events);
+    if(JSON.stringify(STATE.events) !== before){ await dbSet('df:events', STATE.events); dirty = true; }
+  }
+  if(STATE.settings){
+    const before = JSON.stringify(STATE.settings);
+    migrateSettings(STATE.settings);
+    if(JSON.stringify(STATE.settings) !== before){ await dbSet('df:settings', STATE.settings); dirty = true; }
+  }
+  return dirty;
+}
+
 async function initializeSampleDataIfEmpty(){
   let count = 0;
   let events = await dbGet('df:events');
@@ -496,7 +798,7 @@ async function initializeSampleDataIfEmpty(){
   if(!highlights){ highlights = generateSeedHighlights(); await dbSet('df:highlights', highlights); STATE.highlights = highlights; count++; } else { STATE.highlights = highlights; }
 
   let settings = await dbGet('df:settings');
-  if(!settings){ settings = defaultSettings(); await dbSet('df:settings', settings); STATE.settings = settings; count++; } else { STATE.settings = settings; }
+  if(!settings){ settings = defaultSettings(); await dbSet('df:settings', settings); STATE.settings = settings; count++; } else { STATE.settings = migrateSettings(settings); }
   if(!STATE.settings.rosterTeams || !STATE.settings.rosterTeams.length){ STATE.settings.rosterTeams = defaultRosterTeams(); }
 
   let execMembers = await dbGet('df:execMembers');
@@ -527,7 +829,7 @@ async function boot(){
 
   let settings = await dbGet('df:settings');
   if(!settings){ settings = defaultSettings(); if(!sb || STATE.isAdmin) await dbSet('df:settings', settings); }
-  STATE.settings = settings;
+  STATE.settings = migrateSettings(settings);
   if(!STATE.settings.rosterTeams || !STATE.settings.rosterTeams.length){ STATE.settings.rosterTeams = defaultRosterTeams(); }
 
   let execMembers = await dbGet('df:execMembers');
@@ -537,6 +839,13 @@ async function boot(){
   let teamMembers = await dbGet('df:teamMembers');
   if(!teamMembers){ teamMembers = generateSeedTeamMembers(STATE.settings.rosterTeams); if(!sb || STATE.isAdmin) await dbSet('df:teamMembers', teamMembers); }
   STATE.teamMembers = teamMembers;
+
+  let registrations = await dbGet('df:registrations');
+  if(!registrations){ registrations = []; if(!sb || STATE.isAdmin) await dbSet('df:registrations', registrations); }
+  STATE.registrations = Array.isArray(registrations) ? registrations : [];
+
+  await runDataMigrations();
+  applyTheme();
 
   subscribeLiveSync();
 
@@ -565,14 +874,15 @@ function starSVG(sizeClass){
   return '<svg viewBox="0 0 100 100"><g fill="none" stroke="currentColor" stroke-width="5"><polygon points="50,8 72,28 92,50 72,72 50,92 28,72 8,50 28,28"/><polygon points="50,24 66,34 76,50 66,66 50,76 34,66 24,50 34,34"/></g></svg>';
 }
 function brandMarkHtml(size, variant){
-  const url = photoSrc(STATE.settings.logoUrl);
-  const defaultSvg = variant==='nav'
-    ? `<svg width="${size}" height="${size}" viewBox="0 0 100 100"><rect width="100" height="100" rx="20" fill="#0B3D2E"/><g fill="none" stroke="#C7A028" stroke-width="6"><polygon points="50,10 71,29 90,50 71,71 50,90 29,71 10,50 29,29"/><polygon points="50,25 65,35 75,50 65,65 50,75 35,65 25,50 35,35"/></g></svg>`
-    : `<svg width="${size}" height="${size}" viewBox="0 0 100 100"><g fill="none" stroke="#E9CE84" stroke-width="6"><polygon points="50,10 71,29 90,50 71,71 50,90 29,71 10,50 29,29"/><polygon points="50,25 65,35 75,50 65,65 50,75 35,65 25,50 35,35"/></g></svg>`;
+  const url = festLogoSrc();
+  const dark = variant!=='light';
+  const defaultSvg = dark
+    ? `<svg width="${size}" height="${size}" viewBox="0 0 100 100"><rect width="100" height="100" rx="20" fill="#0E3B2E"/><g fill="none" stroke="#C9A227" stroke-width="6"><polygon points="50,10 71,29 90,50 71,71 50,90 29,71 10,50 29,29"/><polygon points="50,25 65,35 75,50 65,65 50,75 35,65 25,50 35,35"/></g></svg>`
+    : `<svg width="${size}" height="${size}" viewBox="0 0 100 100"><g fill="none" stroke="#F0D27A" stroke-width="6"><polygon points="50,10 71,29 90,50 71,71 50,90 29,71 10,50 29,29"/><polygon points="50,25 65,35 75,50 65,65 50,75 35,65 25,50 35,35"/></g></svg>`;
   if(!url) return defaultSvg;
-  return `<span style="display:inline-block;width:${size}px;height:${size}px;">
-    <img src="${esc(url)}" alt="DarussalamFest logo" style="width:${size}px;height:${size}px;object-fit:contain;border-radius:6px;display:block;" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-    <span style="display:none;">${defaultSvg}</span>
+  return `<span style="display:inline-block;width:${size}px;height:${size}px;line-height:0;">
+    <img src="${esc(url)}" alt="${esc(festName())} logo" style="width:${size}px;height:${size}px;object-fit:contain;border-radius:6px;display:block;" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline-block';">
+    <span style="display:none;line-height:0;">${defaultSvg}</span>
   </span>`;
 }
 function brandTextHtml(title){
@@ -585,16 +895,19 @@ function brandTextHtml(title){
 function updateBrand(){
   const nl = document.getElementById('navLogo'); if(nl) nl.innerHTML = brandMarkHtml(30,'nav');
   const fl = document.getElementById('footerLogo'); if(fl) fl.innerHTML = brandMarkHtml(26,'footer');
-  const title = STATE.settings.siteTitle || 'DarussalamFest.com';
+  const title = STATE.settings.siteTitle || festName();
   document.title = STATE.settings.tabTitle || title;
-  const nt = document.getElementById('navBrandText'); if(nt) nt.innerHTML = brandTextHtml(title);
+  const nt = document.getElementById('navBrandText'); if(nt) nt.innerHTML = brandTextHtml(festName());
   const ft = document.getElementById('footerBrandText');
   if(ft){
-    const idx = title.indexOf('Fest');
-    ft.innerHTML = idx>=0
-      ? esc(title.slice(0,idx)) + '<span style="color:#E9CE84;">' + esc(title.slice(idx, idx+4)) + '</span>' + esc(title.slice(idx+4))
-      : esc(title);
+    const n = festName();
+    const m = n.match(/^(.*?)(\d{2,4})$/);
+    ft.innerHTML = m
+      ? esc(m[1]) + '<span style="color:var(--tw-accent);">' + esc(m[2]) + '</span>'
+      : esc(n);
   }
+  const fs = document.getElementById('footSubtitle');
+  if(fs) fs.textContent = festSubtitle() + ' — ' + festTagline();
 }
 function heading(key, fallback){
   return (STATE.settings.pageHeadings && STATE.settings.pageHeadings[key]) || fallback;
@@ -619,6 +932,386 @@ function toast(msg){
 }
 function esc(s){ return (s||'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+/* ============================================================
+   REGISTRATION ENGINE
+   ------------------------------------------------------------
+   The SAME validation runs before the form is rendered and again
+   immediately before the record is written, against a freshly
+   re-read copy of the events + registrations documents. The
+   database is therefore the final authority — editing the HTML or
+   calling the function directly cannot bypass any rule.
+   ============================================================ */
+function regIdentity(r){
+  return String(r.regNumber||'').trim().toLowerCase();
+}
+/* All *counting* registrations for one student in one category. */
+function registrationsOfStudent(regNo, category){
+  const key = regIdentity({regNumber:regNo});
+  if(!key) return [];
+  return STATE.registrations.filter(r=>
+    regIdentity(r)===key &&
+    r.category===category &&
+    r.status!=='REJECTED'
+  );
+}
+/* Live participation progress for a student in a category. */
+function participationProgress(regNo, category, freshRegs){
+  const lim = limits()[category] || DEFAULT_PARTICIPATION_LIMITS.Senior;
+  const pool = freshRegs || STATE.registrations;
+  const key = regIdentity({regNumber:regNo});
+  const mine = !key ? [] : pool.filter(r=>regIdentity(r)===key && r.category===category && r.status!=='REJECTED');
+  const stage = mine.filter(r=>r.eventType==='Stage').length;
+  const nonStage = mine.filter(r=>r.eventType!=='Stage').length;
+  const total = stage + nonStage;
+  return {
+    category, stage, nonStage, total,
+    minStage:lim.minStage, minNonStage:lim.minNonStage, maxTotal:lim.maxTotal,
+    stageOk:stage>=lim.minStage, nonStageOk:nonStage>=lim.minNonStage,
+    atMax:total>=lim.maxTotal,
+    stageFull:stage>=lim.maxTotal, nonStageFull:nonStage>=lim.maxTotal
+  };
+}
+/* Returns { ok, errors[], warnings[], progress } — errors block the
+   registration, warnings are advisory only. */
+function validateRegistration(payload, opts){
+  opts = opts || {};
+  const errors = [];
+  const warnings = [];
+  const freshEvents = opts.events || STATE.events;
+  const freshRegs = opts.registrations || STATE.registrations;
+
+  const ev = freshEvents.find(e=>e.id===payload.eventId);
+  if(!ev){ errors.push('That event could not be found. Please pick an event from the list.'); return {ok:false, errors, warnings, progress:null}; }
+
+  /* --- event status --- */
+  if(eventStatusOf(ev)==='CANCELLED'){ errors.push('This event has been cancelled and is no longer accepting registrations.'); }
+  if(eventStatusOf(ev)==='INACTIVE'){ errors.push('This event is not open for registration at the moment.'); }
+  const regStatus = eventRegStatus(ev);
+  if(regStatus==='CANCELLED' && eventStatusOf(ev)!=='CANCELLED'){ errors.push('Registration for this event has been cancelled.'); }
+  if(regStatus==='CLOSED'){ errors.push('Online registration for this event is closed. Please contact the coordinator.'); }
+
+  /* --- registration window --- */
+  const today = new Date(); today.setHours(0,0,0,0);
+  if(ev.regStart && new Date(ev.regStart+'T00:00:00') > today) errors.push('Registration for this event opens on ' + fmtDate(ev.regStart) + '.');
+  if(ev.regEnd && new Date(ev.regEnd+'T23:59:59') < today) errors.push('Registration for this event closed on ' + fmtDate(ev.regEnd) + '.');
+
+  /* --- category eligibility --- */
+  const category = payload.category;
+  if(!PARTICIPATION_CATEGORIES.includes(category)) errors.push('Please choose a valid category: Sub Junior, Junior or Senior.');
+
+  /* --- required fields --- */
+  if(!String(payload.name||'').trim()) errors.push('Student name is required.');
+  if(!regIdentity(payload)) errors.push('Registration number (chest number) is required.');
+  if(!String(payload.team||'').trim()) errors.push('Team / House is required.');
+
+  /* --- capacity --- */
+  const taken = freshRegs.filter(r=>r.eventId===ev.id && r.status!=='REJECTED').length;
+  const cap = Number(ev.maxParticipants);
+  if(cap>0 && taken>=cap) errors.push('This event has reached its maximum of ' + cap + ' participants.');
+
+  /* --- duplicate registration --- */
+  const dup = freshRegs.find(r=>r.eventId===ev.id && regIdentity(r)===regIdentity(payload) && r.status!=='REJECTED');
+  if(dup) errors.push('Registration number ' + payload.regNumber + ' is already registered for this event.');
+
+  /* --- participation limits --- */
+  let progress = null;
+  if(PARTICIPATION_CATEGORIES.includes(category)){
+    progress = participationProgress(payload.regNumber, category, freshRegs);
+    if(progress.atMax){
+      errors.push('Maximum program limit reached for your category — ' + category + ' allows ' + progress.maxTotal + ' programs in total.');
+    }
+    if(!progress.stageOk) warnings.push('You have ' + progress.stage + ' of the ' + progress.minStage + ' stage programs required for ' + category + '.');
+    if(!progress.nonStageOk) warnings.push('You have ' + progress.nonStage + ' of the ' + progress.minNonStage + ' non-stage programs required for ' + category + '.');
+  }
+  return { ok:errors.length===0, errors, warnings, progress, event:ev };
+}
+function nextRegNumber(list, eventCode, category){
+  const prefix = String(eventCode||'EV').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,4) || 'EV';
+  const catCode = { 'Sub Junior':'SJ', 'Junior':'JR', 'Senior':'SR' }[category] || 'GN';
+  const base = prefix + '-' + catCode + '-';
+  const used = new Set((list||[]).map(r=>String(r.regNo||'')));
+  let i = 1;
+  while(used.has(base + String(i).padStart(3,'0'))) i++;
+  return base + String(i).padStart(3,'0');
+}
+function makeRegistrationId(){ return 'reg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,7); }
+
+/* The authoritative write path: re-reads both documents, validates
+   against them, then persists. */
+async function submitRegistration(payload){
+  const [freshEvents, freshRegs] = await Promise.all([ dbGet('df:events'), dbGet('df:registrations') ]);
+  const events = Array.isArray(freshEvents) && freshEvents.length ? freshEvents : STATE.events;
+  const regs = Array.isArray(freshRegs) ? freshRegs : STATE.registrations;
+  const check = validateRegistration(payload, { events, registrations:regs });
+  if(!check.ok) return check;
+  const ev = check.event;
+  const record = {
+    id: makeRegistrationId(),
+    regNo: nextRegNumber(regs, ev.eventCode, payload.category),
+    eventId: ev.id,
+    eventSlug: eventSlug(ev),
+    eventName: ev.name,
+    eventCode: ev.eventCode || '',
+    eventType: eventTypeOf(ev),
+    category: payload.category,
+    name: String(payload.name||'').trim(),
+    regNumber: String(payload.regNumber||'').trim(),
+    team: String(payload.team||'').trim(),
+    klass: String(payload.klass||'').trim(),
+    phone: String(payload.phone||'').trim(),
+    email: String(payload.email||'').trim(),
+    notes: String(payload.notes||'').trim(),
+    status: 'PENDING',
+    createdAt: new Date().toISOString()
+  };
+  const next = regs.concat([record]);
+  await dbSet('df:registrations', next);
+  STATE.registrations = next;
+  return { ok:true, errors:[], warnings:check.warnings, progress:check.progress, registration:record, event:ev };
+}
+
+/* ============================================================
+   REGISTRATION LINKS & SHARING
+   ============================================================ */
+function siteBaseUrl(){
+  return location.origin + location.pathname.replace(/[^/]*$/, '');
+}
+function eventRegUrl(ev){
+  return siteBaseUrl() + '#/register/' + eventSlug(ev);
+}
+function genericRegUrl(){ return siteBaseUrl() + '#/register'; }
+function whatsappShareUrl(text){
+  return 'https://wa.me/?text=' + encodeURIComponent(text);
+}
+function eventShareText(ev){
+  return 'Register for ' + (ev.programName || ev.name) + ' - ' + festName() + '\n\nRegistration Link:\n' + eventRegUrl(ev);
+}
+async function copyText(text, okMsg){
+  try{ await navigator.clipboard.writeText(text); toast(okMsg||'Copied!'); }
+  catch(err){
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select();
+    try{ document.execCommand('copy'); toast(okMsg||'Copied!'); }
+    catch(e2){ toast('Could not copy — please copy the link manually.'); }
+    ta.remove();
+  }
+}
+function openShareEventModal(ev){
+  const url = eventRegUrl(ev);
+  const text = eventShareText(ev);
+  const qrSrc = 'https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=' + encodeURIComponent(url);
+  showModal(`
+    <button class="modal-close" data-action="close-modal">×</button>
+    <h3 style="text-align:center;">Share this registration</h3>
+    <div class="qr-box">
+      <img src="${esc(qrSrc)}" alt="QR code for ${esc(ev.name)} registration">
+      <p style="font-size:.85rem;color:var(--ink-soft);">${esc(ev.programName||ev.name)} · ${esc(eventTypeOf(ev))} · ${esc(ev.category)}</p>
+      <div class="share-link-row">
+        <input type="text" id="evRegLinkInput" readonly value="${esc(url)}">
+        <button class="btn btn-primary btn-sm" data-action="copy-reg-link" data-id="${esc(ev.id)}">Copy</button>
+      </div>
+      <div style="display:flex; gap:10px; justify-content:center; margin-top:14px; flex-wrap:wrap;">
+        <a class="share-btn wa" href="${esc(whatsappShareUrl(text))}" target="_blank" rel="noopener">📲 WhatsApp</a>
+        <a class="share-btn" href="https://t.me/share/url?url=${encodeURIComponent(url)}&text=${encodeURIComponent('Register for '+(ev.programName||ev.name)+' - '+festName())}" target="_blank" rel="noopener">✈️ Telegram</a>
+        <button class="share-btn" data-action="native-share-reg" data-id="${esc(ev.id)}">📤 Share via device…</button>
+      </div>
+      <p class="results-count" style="margin-top:12px;margin-bottom:0;">${eventRegCount(ev)} registered so far${ev.maxParticipants?' · maximum '+esc(ev.maxParticipants):''}</p>
+    </div>
+  `);
+}
+
+/* ============================================================
+   REGISTRATION PAGE  (#/register  and  #/register/<event-slug>)
+   ============================================================ */
+function registrationBannerHtml(){
+  const open = visibleEvents().filter(e=>eventRegWindowOpen(e));
+  return `<div class="reg-banner">
+    <h2>📝 Register for ${esc(festName())}</h2>
+    <p>${open.length} programme${open.length===1?'':'s'} currently open for online registration. Choose an event, fill the form, and your entry reaches the admin panel instantly.</p>
+    <div class="reg-actions">
+      <a class="btn btn-gold" href="#/register">🖊️ Start Registration</a>
+      <a class="btn btn-outline" href="#events">Browse all events</a>
+    </div>
+  </div>`;
+}
+function registrationProgressHtml(category, regNumber){
+  const p = participationProgress(regNumber, category);
+  const totalPct = p.maxTotal>0 ? Math.min(100, Math.round((p.total/p.maxTotal)*100)) : 0;
+  return `<div class="prog-panel" id="regProgressHost">
+    <h4>${esc(category)} Participation Requirement</h4>
+    <p class="prog-note">${regNumber
+      ? 'Live progress for registration number <b>' + esc(regNumber) + '</b>. Enter your registration number to track it.'
+      : 'Enter your registration number (chest number) to see your live progress.'}</p>
+    ${p.stage>=p.minStage && p.nonStage>=p.minNonStage
+      ? '<div class="prog-alert ok">✓ Minimum requirement met for ' + esc(category) + '. You can still register until you reach ' + p.maxTotal + ' programs.</div>'
+      : '<div class="prog-alert">Complete the minimums below to be eligible for the full programme list.</div>'}
+    ${progressItemHtml('Stage Programs', p.stage, p.minStage, p.maxTotal, p.stageOk)}
+    ${progressItemHtml('Non-Stage Programs', p.nonStage, p.minNonStage, p.maxTotal, p.nonStageOk)}
+    <div class="prog-item">
+      <div class="prog-top"><span>Total Programs</span><span class="${p.atMax?'short':'ok'}">${p.total} / ${p.maxTotal}</span></div>
+      <div class="prog-track"><div class="prog-fill ${p.atMax?'full':'done'}" style="width:${totalPct}%"></div></div>
+    </div>
+    ${p.atMax ? '<div class="prog-alert">Maximum program limit reached for your category — ' + esc(category) + ' allows ' + p.maxTotal + ' programs in total.</div>' : ''}
+  </div>`;
+}
+function progressItemHtml(label, val, min, max, ok){
+  const pct = max>0 ? Math.max(3, Math.min(100, Math.round((val/max)*100))) : 0;
+  const full = val>=max;
+  return `<div class="prog-item">
+    <div class="prog-top"><span>${ok?'✓':'○'} ${esc(label)}</span><span class="${ok?'ok':'short'}">${val} / ${min} minimum ${ok?'✓':''}</span></div>
+    <div class="prog-track"><div class="prog-fill ${full?'full':(ok?'done':'')}" style="width:${pct}%"></div></div>
+  </div>`;
+}
+function renderRegister(slug){
+  if(STATE.regSuccess) return renderRegisterSuccess(STATE.regSuccess);
+  const ev = slug ? eventBySlug(slug) : null;
+  if(slug && !ev){
+    return `<section class="section"><div class="container">
+      <div class="empty-state" style="padding:70px 10px;">
+        <h2 style="font-size:1.4rem;">Event not found</h2>
+        <p>This registration link may have been removed or mistyped.</p>
+        <a class="btn btn-primary" href="#/register">Browse open events</a>
+      </div>
+    </div></section>`;
+  }
+  if(ev && isEventCancelled(ev)){
+    return `<section class="section"><div class="container">
+      <div class="card" style="max-width:640px;margin:40px auto;text-align:center;">
+        <div class="event-cat">${esc(ev.category)}</div>
+        <h3 style="font-size:1.5rem;">${esc(ev.name)}</h3>
+        <div class="prog-alert" style="text-align:left;margin-top:16px;">${esc(ev.cancelledReason||'This event has been cancelled and is no longer accepting registrations.')}</div>
+        <div style="margin-top:18px;"><a class="btn btn-primary" href="#/register">View other open events</a></div>
+      </div>
+    </div></section>`;
+  }
+  const open = visibleEvents().filter(e=>eventRegWindowOpen(e));
+  const events = ev ? [ev] : open;
+  const sel = ev ? ev.id : (events[0] ? events[0].id : '');
+  const selEvent = events.find(e=>e.id===sel);
+  const cat = selEvent ? selEvent.category : STATE.regCategory;
+  const teams = STATE.settings.rosterTeams || [];
+
+  return `<section class="section">
+    <div class="container">
+      <div class="section-head">
+        <div class="eyebrow">${esc(festSubtitle())}</div>
+        <h2>📝 ${ev ? esc(ev.programName || ev.name) : 'Online Registration'}</h2>
+        <p>${ev ? esc(ev.description || 'Fill the form below to register for this programme.') : 'Choose a programme, fill in your details, and submit. Your entry is saved to the database and visible in the admin panel immediately.'}</p>
+        <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+          ${ev ? `<span class="chip chip-open">${esc(eventTypeOf(ev))}</span><span class="chip chip-stage">${esc(ev.category)}</span>` : ''}
+        </div>
+      </div>
+      ${!events.length ? '<div class="empty-state" style="padding:60px 10px;">No programmes are currently open for registration. Please check back soon or contact the coordinator.</div>' : `
+      <div class="reg-grid">
+        <div class="reg-form">
+          <form data-action="submit-registration" data-event-id="${esc(sel)}">
+            <div class="field">
+              <label>Programme <span class="req">*</span></label>
+              <select name="eventId" id="regEvent" required>
+                ${events.map(e=>`<option value="${esc(e.id)}" ${e.id===sel?'selected':''}>${esc(e.name)} — ${esc(eventTypeOf(e))}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label>Full Name <span class="req">*</span></label>
+                <input type="text" name="name" required placeholder="e.g. AHMED ZAKI" autocomplete="name">
+              </div>
+              <div class="field">
+                <label>Registration No. / Chest No. <span class="req">*</span></label>
+                <input type="text" name="regNumber" id="regNumberInput" required placeholder="e.g. 101" autocomplete="off">
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label>Category <span class="req">*</span></label>
+                <select name="category" id="regCategorySelect" required>
+                  ${PARTICIPATION_CATEGORIES.map(c=>`<option value="${esc(c)}" ${c===cat?'selected':''}>${esc(c)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="field">
+                <label>Team / House <span class="req">*</span></label>
+                <select name="team" required>
+                  <option value="">— Select team —</option>
+                  ${teams.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label>Class / Grade</label>
+                <input type="text" name="klass" placeholder="e.g. 9">
+              </div>
+              <div class="field">
+                <label>Phone (WhatsApp)</label>
+                <input type="tel" name="phone" placeholder="e.g. +91 98765 43210" autocomplete="tel">
+              </div>
+            </div>
+            <div class="field">
+              <label>Email <span style="font-weight:400;color:var(--ink-soft);">(optional)</span></label>
+              <input type="email" name="email" placeholder="you@example.com" autocomplete="email">
+            </div>
+            <div class="field">
+              <label>Notes <span style="font-weight:400;color:var(--ink-soft);">(optional)</span></label>
+              <textarea name="notes" placeholder="Anything the coordinator should know (e.g. group name, song details)"></textarea>
+            </div>
+            <div class="reg-actions" style="justify-content:flex-start;margin-top:6px;">
+              <button class="btn btn-primary" type="submit">Register Now</button>
+              <a class="btn btn-ghost" href="#events">Back to events</a>
+            </div>
+            <p class="results-count" style="margin-top:14px;margin-bottom:0;">Duplicate registrations, cancelled events and category program limits are all checked automatically when you submit.</p>
+          </form>
+        </div>
+        <div>
+          ${registrationProgressHtml(cat, '')}
+          ${selEvent ? `<div class="card" style="margin-top:16px;">
+            <h4 style="margin-top:0;">Event details</h4>
+            <div class="event-meta">
+              <span>📅 ${fmtDate(selEvent.date)}</span>
+              <span>🕐 ${fmtTime(selEvent.time)}</span>
+              <span>📍 ${esc(selEvent.venue)}</span>
+              <span>${selEvent.maxParticipants ? '👥 Maximum '+esc(selEvent.maxParticipants)+' participants' : '👥 No participant limit'}</span>
+            </div>
+            ${selEvent.rules ? `<h4 style="margin:16px 0 6px;font-size:.9rem;">Rules</h4><ul style="font-size:.82rem;color:var(--ink-soft);padding-left:18px;margin:0;">${selEvent.rules.split('\n').filter(Boolean).map(r=>`<li>${esc(r.trim())}</li>`).join('')}</ul>` : ''}
+            <div class="share-row" style="margin-top:16px;">
+              <button class="share-btn wa" href="${esc(whatsappShareUrl(eventShareText(selEvent)))}" target="_blank" rel="noopener">📲 WhatsApp</button>
+              <button class="share-btn" data-action="share-reg-link" data-id="${esc(selEvent.id)}">📤 Share</button>
+            </div>
+          </div>` : ''}
+        </div>
+      </div>`}
+    </div>
+  </section>`;
+}
+function renderRegisterSuccess(payload){
+  const r = payload.registration, ev = payload.event;
+  return `<section class="section"><div class="container">
+    <div class="card reg-done" style="max-width:640px;margin:30px auto;">
+      <div class="tick">✓</div>
+      <h3>Registration Confirmed</h3>
+      <p style="color:var(--ink-soft);">Your entry for <b>${esc(ev.programName||ev.name)}</b> has been saved and sent to the admin panel.</p>
+      <div class="reg-code">${esc(r.regNo)}</div>
+      <div class="results-count" style="margin-bottom:18px;">Please note this reference number. Keep a screenshot.</div>
+      <div style="text-align:left;max-width:420px;margin:0 auto;">
+        <div class="event-meta">
+          <span>👤 ${esc(r.name)}</span>
+          <span>🪪 ${esc(r.regNumber)}</span>
+          <span>🏠 ${esc(r.team)}</span>
+          <span>🎭 ${esc(r.eventType)}</span>
+          <span>📂 ${esc(r.category)}</span>
+          <span>🕐 ${new Date(r.createdAt).toLocaleString()}</span>
+        </div>
+      </div>
+      <div class="reg-actions" style="margin-top:22px;">
+        <a class="btn btn-primary" href="#/register/${esc(eventSlug(ev))}">Register for another program</a>
+        <a class="btn btn-ghost" href="#events">Back to events</a>
+        <button class="share-btn" data-action="share-reg-link" data-id="${esc(ev.id)}">📤 Share</button>
+      </div>
+    </div>
+  </div></section>`;
+}
+
+
 /* reveal-on-scroll */
 let revealObserver = null;
 function setupRevealObserver(){
@@ -629,30 +1322,57 @@ function setupRevealObserver(){
   document.querySelectorAll('.reveal').forEach(el=> revealObserver.observe(el));
 }
 
-/* ================= ROUTER ================= */
+/* ================= ROUTER =================
+   Hash routes. Registration deep links look like:
+     #/register                → all open events
+     #/register/<event-slug>   → one specific event
+   A clean path (/register/<slug>) is also accepted and rewritten to
+   the hash on boot, so links shared on WhatsApp / Instagram work. */
 window.addEventListener('hashchange', render);
-function currentRoute(){ return (location.hash||'#home').replace('#',''); }
-
+function currentRoute(){ return (location.hash||'#home').replace('#','').replace(/^\/+/,''); }
+function normalizeIncomingRoute(){
+  /* /register/slug → #/register/slug  (only when we are on our own path) */
+  const p = location.pathname || '';
+  const m = p.match(/\/register\/([A-Za-z0-9._~%-]+)\/?$/);
+  if(m && !location.hash){
+    const slug = decodeURIComponent(m[1]);
+    const ev = eventBySlug(slug);
+    location.replace(location.origin + location.pathname.replace(/\/register\/[^/]+\/?$/,'') + '#/register/' + (ev ? eventSlug(ev) : slug));
+  }
+}
 function render(){
   updateBrand();
-  const route = currentRoute();
+  let route = currentRoute();
+  /* The confirmation view is only meant to survive its own re-render; any
+     route change away from the register view discards it. */
+  if(STATE.regSuccess && route!=='register' && !(route.indexOf('register/')===0 && route.slice('register/'.length)===STATE.regSuccess.eventSlug)){
+    STATE.regSuccess = null;
+  }
   if(route==='tv'){ document.body.classList.add('tv-mode'); } else { document.body.classList.remove('tv-mode'); stopTVPolling(); }
   if(route==='points'){ ensurePointsMusic(); } else { stopPointsMusic(); }
   if(route==='home'){ ensureHomeMusic(); } else { stopHomeMusic(); }
   document.querySelectorAll('.nav-links a').forEach(a=>{
-    a.classList.toggle('active', a.dataset.nav===route);
+    a.classList.toggle('active', a.dataset.nav===route || (a.dataset.nav==='register' && route.indexOf('register')===0));
   });
   document.getElementById('navLinks').classList.remove('open');
   const app = document.getElementById('app');
-  const pageBg = STATE.settings.pageBg[route];
+  const pageKey = route.indexOf('register')===0 ? 'register' : route;
+  const pageBg = STATE.settings.pageBg[pageKey];
   if(pageBg){
     app.style.background = pageBg.type==='image' ? ('center/cover no-repeat url("'+pageBg.value+'")') : pageBg.value;
   } else {
     app.style.background = '';
   }
   const renderers = { home:renderHome, events:renderEvents, schedule:renderSchedule, points:renderPoints, results:renderResults, winners:renderWinners, highlights:renderHighlights, exec:renderExec, teams:renderTeamsPage, about:renderAbout, contact:renderContact, admin:renderAdmin, tv:renderTV };
-  const fn = renderers[route] || renderHome;
-  app.innerHTML = fn();
+  let html;
+  if(route==='register' || route.indexOf('register/')===0){
+    const slug = route.indexOf('register/')===0 ? route.slice('register/'.length).split('?')[0] : '';
+    html = renderRegister(decodeURIComponent(slug||''));
+  } else {
+    const fn = renderers[route] || renderHome;
+    html = fn();
+  }
+  app.innerHTML = html;
   window.scrollTo({top:0, behavior:'instant' in document.documentElement.style ? 'instant' : 'auto'});
   setupRevealObserver();
 }
@@ -669,36 +1389,44 @@ function renderHome(){
     heroStyle = 'background:center/cover no-repeat url('+"'"+resolvedHeroImg+"'"+');';
     heroBgHtml = '<div class="hero-overlay"></div>';
   } else {
-    heroStyle = 'background:'+(hero.colorValue||'linear-gradient(160deg,#0B3D2E,#146B52 55%,#0B3D2E)')+';';
+    heroStyle = 'background:'+(hero.colorValue||'linear-gradient(160deg,#0E3B2E,#14614A 55%,#072019)')+';';
   }
-  const upcoming = STATE.events.filter(e=>computeStatus(e)==='Upcoming').length;
-  const ongoing = STATE.events.filter(e=>computeStatus(e)==='Ongoing').length;
-  const completed = STATE.events.filter(e=>computeStatus(e)==='Completed').length;
+  const live = visibleEvents();
+  const upcoming = live.filter(e=>computeStatus(e)==='Upcoming').length;
+  const ongoing = live.filter(e=>computeStatus(e)==='Ongoing').length;
+  const completed = live.filter(e=>computeStatus(e)==='Completed').length;
+  const open = live.filter(e=>eventRegWindowOpen(e)).length;
   const featured = STATE.highlights.find(h=>h.featured==='yes') || STATE.highlights[0];
+  const featuredEvents = live.filter(e=>computeStatus(e)!=='Completed').slice(0,6);
 
   return `
   <section class="hero" style="${heroStyle}">
     ${heroBgHtml}
     <div class="hero-pattern">${patternRepeat()}</div>
     <div class="container hero-inner">
-      <div class="eyebrow" style="color:#E9CE84;">Darussalam Institution Presents</div>
-      <h1>${esc(STATE.settings.heroHeading || STATE.settings.siteTitle)}</h1>
-      <p class="tagline">${esc(STATE.settings.tagline)}</p>
+      <div class="fest-lockup">
+        <img class="fest-logo" src="${esc(festLogoSrc())}" alt="${esc(festName())} — ${esc(festSubtitle())}" onerror="this.onerror=null;this.src='${esc(FEST_LOGO_DATA_URL)}';">
+        <div class="fest-sub">${esc(festSubtitle())}</div>
+        <h1 class="fest-name">${festNameHtml()}</h1>
+        <div class="fest-tagline">${esc(festTagline())}</div>
+      </div>
+      <div class="hero-ribbon">🏆 ${STATE.settings.rosterTeams.length} Houses · ${live.length} Programmes · The Clash of Talent</div>
       <div class="hero-actions">
-        <a href="#events" class="btn btn-gold">Explore Events</a>
-        <a href="#schedule" class="btn btn-outline">View Schedule</a>
+        <a href="#register" class="btn btn-gold">📝 Register Online</a>
+        <a href="#events" class="btn btn-outline">Explore Events</a>
+        <a href="#points" class="btn btn-outline">Point Table</a>
         ${homeMusicToggleHtml()}
       </div>
     </div>
   </section>
 
-  <section class="section">
+  <section class="section section-tight">
     <div class="container">
-      <div class="grid grid-4">
-        <div class="stat-mini reveal"><b>${STATE.events.length}+</b><span>Total Events</span></div>
-        <div class="stat-mini reveal"><b>${upcoming}</b><span>Upcoming</span></div>
-        <div class="stat-mini reveal"><b>${ongoing}</b><span>Ongoing Today</span></div>
-        <div class="stat-mini reveal"><b>${completed}</b><span>Completed</span></div>
+      <div class="stat-strip">
+        <div class="stat-tile reveal"><b>${live.length}</b><span>Total Programmes</span></div>
+        <div class="stat-tile reveal"><b>${upcoming}</b><span>Upcoming</span></div>
+        <div class="stat-tile reveal"><b>${ongoing}</b><span>Ongoing Today</span></div>
+        <div class="stat-tile reveal"><b>${completed}</b><span>Completed</span></div>
       </div>
     </div>
   </section>
@@ -706,27 +1434,157 @@ function renderHome(){
   <section class="section section-alt">
     <div class="container">
       <div class="section-head">
-        <div class="eyebrow">Featured</div>
-        <h2>${esc(heading('homeFeatured','Featured Highlight'))}</h2>
-        <div class="divider"><span class="line"></span><span class="mark" style="color:var(--gold); width:16px;">${starSVG()}</span><span class="line"></span></div>
+        <div class="eyebrow">The Clash</div>
+        <h2>🏆 ${esc(heading('homePoints','Team Leaderboard'))}</h2>
+        <p>Live cumulative standings across all events — recalculated the moment a result is entered.</p>
       </div>
-      ${featured ? videoCardHtml(featured, true) : '<div class="empty-state">No highlight video yet.</div>'}
-      <div style="text-align:center; margin-top:26px;"><a href="#highlights" class="btn btn-ghost">See all highlights →</a></div>
+      ${teamLeaderboardShellHtml()}
+      <div style="text-align:center; margin-top:24px;"><a href="#points" class="btn btn-ghost">Full point table →</a></div>
     </div>
   </section>
 
   <section class="section">
     <div class="container">
       <div class="section-head">
-        <div class="eyebrow">Standings</div>
-        <h2>${esc(heading('homePoints','Current Points Table'))}</h2>
+        <div class="eyebrow">Individual Ranking</div>
+        <h2>🥇 ${esc(heading('homeIndividual','Individual Leaderboard'))}</h2>
+        <p>Top three in each category — Senior, Junior and Sub Junior, ranked separately.</p>
       </div>
-      ${pointsTableHtml(STATE.points.slice().sort((a,b)=>b.points-a.points))}
-      <div style="text-align:center; margin-top:22px;"><a href="#points" class="btn btn-ghost">Full points table →</a></div>
+      <div class="cat-tabs" id="indCatTabs">
+        ${PARTICIPATION_CATEGORIES.map(c=>`<button class="cat-tab ${STATE.individualCategory===c?'active':''}" data-action="ind-category" data-val="${esc(c)}">${esc(c)}</button>`).join('')}
+      </div>
+      <div id="indLeaderboardHost">${individualTop3Html(STATE.individualCategory)}</div>
+      <div style="text-align:center; margin-top:24px;"><a href="#teams" class="btn btn-ghost">All participants →</a></div>
+    </div>
+  </section>
+
+  <section class="section section-alt">
+    <div class="container">
+      <div class="section-head">
+        <div class="eyebrow">Online Registration</div>
+        <h2>${esc(heading('homeRegister','Online Registration'))}</h2>
+      </div>
+      ${registrationBannerHtml()}
+      ${featuredEvents.length ? `
+        <div class="grid grid-3" style="margin-top:26px;">
+          ${featuredEvents.map(e=>eventCardHtml(e)).join('')}
+        </div>` : ''}
+    </div>
+  </section>
+
+  ${featured ? `
+  <section class="section">
+    <div class="container">
+      <div class="section-head">
+        <div class="eyebrow">Featured</div>
+        <h2>${esc(heading('homeFeatured','Featured Highlight'))}</h2>
+        <div class="divider"><span class="line"></span><span class="mark" style="color:var(--gold); width:16px;">${starSVG()}</span><span class="line"></span></div>
+      </div>
+      ${videoCardHtml(featured, true)}
+      <div style="text-align:center; margin-top:26px;"><a href="#highlights" class="btn btn-ghost">See all highlights →</a></div>
+    </div>
+  </section>` : ''}
+
+  <section class="section section-alt">
+    <div class="container">
+      <div class="section-head">
+        <div class="eyebrow">Search</div>
+        <h2>${esc(heading('results','Event Results'))}</h2>
+        <p>Look up any student by name, registration number, team or event.</p>
+      </div>
+      ${resultsSearchHtml(true)}
     </div>
   </section>
   `;
 }
+
+/* ============================================================
+   TEAM LEADERBOARD — derived live from df:points.
+   Rank is always recomputed; nothing here is hard-coded.
+   ============================================================ */
+function sortedTeamStandings(){
+  return STATE.points.slice().sort((a,b)=>(b.points||0)-(a.points||0));
+}
+/* The team member with the highest individual points = the team leader. */
+function teamLeaderName(team){
+  const members = STATE.teamMembers.filter(m=>m.team===team && (m.points||0)>0);
+  if(!members.length) return '';
+  members.sort((a,b)=>(b.points||0)-(a.points||0));
+  return members[0].name;
+}
+function teamLeaderboardShellHtml(){
+  const sorted = sortedTeamStandings();
+  if(!sorted.length) return '<div class="empty-state">The point table is empty. Results will appear here as soon as the admin applies points.</div>';
+  const top = sorted.slice(0,3);
+  const medal = ['🥇','🥈','🥉'];
+  const rest = sorted.slice(3);
+  const max = sorted[0].points||1;
+  const slot = (p,i)=>{
+    const cls = 'p-1'; const label = medal[i];
+    const leader = teamLeaderName(p.team);
+    return `<div class="podium-slot ${cls}">
+      <div class="podium-medal">${label}</div>
+      <div class="podium-team">${esc(p.team)}</div>
+      ${leader?`<div class="podium-leader">Leader: ${esc(leader)}</div>`:'<div class="podium-leader" style="opacity:.6">Leader: —</div>'}
+      <div class="podium-pts">${p.points||0} PTS</div>
+    </div>`;
+  };
+  return `<div class="lb-shell">
+    <h3 class="lb-title">🏆 Team Leaderboard</h3>
+    <div class="lb-sub">Live cumulative standings across all events</div>
+    <div class="lb-podium">
+      ${top[1] ? slot(top[1],1) : '<div class="podium-slot p-2"></div>'}
+      ${top[0] ? slot(top[0],0) : ''}
+      ${top[2] ? slot(top[2],2) : '<div class="podium-slot p-3"></div>'}
+    </div>
+    ${rest.length ? `<div class="lb-list">
+      ${rest.map((p,i)=>{
+        const r = i+4;
+        return `<div class="lb-row">
+          <div class="lb-rank">#${r}</div>
+          <div class="lb-dot" style="background:${esc(teamColor(p.team))}"></div>
+          <div class="lb-body">
+            <div class="lb-name">${esc(p.team)}</div>
+            <div class="lb-leader">${teamLeaderName(p.team)?'Leader: '+esc(teamLeaderName(p.team)):'Leader: —'}</div>
+            <div class="lb-bar" style="width:${Math.max(4, Math.round(((p.points||0)/max)*100))}%"></div>
+          </div>
+          <div class="lb-pts">${p.points||0} <span style="font-size:.6rem;letter-spacing:.12em">PTS</span></div>
+        </div>`;
+      }).join('')}
+    </div>` : '<div class="lb-sub" style="margin:0">Complete ranking above — no further teams yet.</div>'}
+  </div>`;
+}
+
+/* ============================================================
+   INDIVIDUAL LEADERBOARD — top 3, strictly per category.
+   Points come from df:teamMembers (auto-credited from results).
+   ============================================================ */
+function individualStandings(category){
+  return STATE.teamMembers
+    .filter(m=>m.category===category)
+    .map(m=>Object.assign({}, m, { _points: Number(m.points)||0 }))
+    .sort((a,b)=>b._points-a._points || String(a.name||'').localeCompare(String(b.name||'')));
+}
+function individualTop3Html(category){
+  const top = individualStandings(category).slice(0,3);
+  const medal = ['🥇','🥈','🥉'];
+  if(!top.length){
+    return '<div class="empty-state">No ' + esc(category) + ' participants yet. Once the admin enters results, the top three appear here automatically.</div>';
+  }
+  return `<div class="ind-grid">
+    ${top.map((m,i)=>{
+      const photo = photoSrc(m.photo) || avatarUrl(m.name||'participant');
+      return `<div class="ind-card reveal ${i===0?'rank-1':''}" style="animation-delay:${i*90}ms">
+        <div class="ind-medal">${medal[i]}</div>
+        <img class="ind-avatar" src="${esc(photo)}" alt="${esc(m.name||'')}" onerror="this.onerror=null;this.src='${esc(avatarUrl(m.name||'p'))}';">
+        <div class="ind-name">${esc(m.name||'—')}</div>
+        <div class="ind-team">${m.chestNumber?esc(m.chestNumber)+' · ':''}${esc(m.team||'—')}</div>
+        <div class="ind-pts">${m._points}<small>PTS</small></div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
 
 function patternRepeat(){
   let cells = '';
@@ -739,7 +1597,8 @@ function patternRepeat(){
 /* ================= EVENTS ================= */
 function renderEvents(){
   const f = STATE.filters;
-  let list = STATE.events.filter(e=>{
+  const source = STATE.isAdmin ? STATE.events : visibleEvents();
+  let list = source.filter(e=>{
     if(f.q && !e.name.toLowerCase().includes(f.q.toLowerCase())) return false;
     if(f.category && e.category !== f.category) return false;
     if(f.date && e.date !== f.date) return false;
@@ -756,7 +1615,7 @@ function renderEvents(){
       <div class="section-head">
         <div class="eyebrow">All Events</div>
         <h2>${esc(heading('events','Festival Events'))}</h2>
-        <p>${STATE.events.length} events across ${CATEGORIES.length} categories, over ${FEST_DATES.length} days.</p>
+        <p>${list.length} programme${list.length===1?'':'s'} shown${STATE.isAdmin?' (cancelled events stay visible to admins)':''}.</p>
       </div>
       <div class="filterbar">
         <input type="text" id="evSearch" placeholder="Search event name…" value="${esc(f.q)}">
@@ -772,23 +1631,52 @@ function renderEvents(){
     </div>
   </section>`;
 }
+function eventTypeChipHtml(ev){
+  const t = eventTypeOf(ev);
+  return `<span class="chip ${t==='Stage'?'chip-stage':'chip-nonstage'}">${t==='Stage'?'🎭':'📝'} ${esc(t)}</span>`;
+}
+function eventStatusChipHtml(ev){
+  const st = eventStatusOf(ev);
+  if(st!=='ACTIVE') return `<span class="chip chip-${st==='CANCELLED'?'cancelled':'inactive'}">${esc(st)}</span>`;
+  const open = eventRegWindowOpen(ev);
+  const rs = eventRegStatus(ev);
+  const label = rs==='CANCELLED' ? 'CANCELLED' : (open ? 'REGISTRATION OPEN' : 'REGISTRATION CLOSED');
+  const cls = rs==='CANCELLED' ? 'chip-cancelled' : (open ? 'chip-open' : 'chip-closed');
+  return `<span class="chip ${cls}">${open?'● ':''}${esc(label)}</span>`;
+}
 function eventCardHtml(e){
   const status = computeStatus(e);
-  return `<div class="card event-card reveal">
+  const cancelled = isEventCancelled(e);
+  const open = eventRegWindowOpen(e);
+  const taken = eventRegCount(e);
+  return `<div class="card event-card reveal" ${cancelled?'style="opacity:.72;"':''}>
     <div class="event-top">
       <div>
-        <div class="event-cat">${esc(e.category)}</div>
+        <div class="event-cat">${esc(e.category)}${e.eventCode?' · No. '+esc(e.eventCode):''}</div>
         <h3>${esc(e.name)}</h3>
       </div>
       <span class="badge ${badgeClass(status)}">${status}</span>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin:2px 0 4px;">
+      ${eventTypeChipHtml(e)} ${eventStatusChipHtml(e)}
     </div>
     <div class="event-meta">
       <span>📅 ${fmtDate(e.date)}</span>
       <span>🕐 ${fmtTime(e.time)}</span>
       <span>📍 ${esc(e.venue)}</span>
-      ${e.participants ? `<span>🧑‍🤝‍🧑 ${esc(e.participants)}</span>` : ''}
+      ${e.maxParticipants ? `<span>👥 ${taken} of ${esc(e.maxParticipants)} registered</span>` : (taken ? `<span>👥 ${taken} registered</span>` : '')}
     </div>
-    ${e.rules ? `<button class="btn btn-ghost btn-sm" style="margin-top:6px; align-self:flex-start;" data-action="view-event-rules" data-id="${e.id}">📋 View Rules</button>` : ''}
+    ${e.description ? `<p style="font-size:.85rem;color:var(--ink-soft);margin:4px 0 0;">${esc(e.description)}</p>` : ''}
+    ${cancelled
+      ? `<div class="prog-alert" style="margin-top:10px;">${esc(e.cancelledReason||'This event has been cancelled.')}</div>`
+      : `<div class="share-row" style="margin-top:12px;">
+          ${open
+            ? `<a class="btn btn-primary btn-sm" href="#/register/${esc(eventSlug(e))}">Register Now</a>`
+            : `<button class="btn btn-ghost btn-sm" disabled>${esc(eventRegClosedReason(e)||'Registration Closed')}</button>`}
+          ${e.rules ? `<button class="btn btn-ghost btn-sm" data-action="view-event-rules" data-id="${esc(e.id)}">📋 Rules</button>` : ''}
+          <button class="share-btn" data-action="copy-reg-link" data-id="${esc(e.id)}">📋 Link</button>
+          <button class="share-btn" data-action="share-reg-link" data-id="${esc(e.id)}">📤 Share</button>
+        </div>`}
   </div>`;
 }
 function openEventRulesModal(id){
@@ -796,10 +1684,17 @@ function openEventRulesModal(id){
   const rules = (e.rules||'').split('\n').map(r=>r.trim()).filter(Boolean);
   showModal(`
     <button class="modal-close" data-action="close-modal">×</button>
-    <h3>${esc(e.name)} — Rules</h3>
+    <h3>${esc(e.name)}</h3>
+    <p style="font-size:.85rem;color:var(--ink-soft);margin-top:-6px;">${esc(eventTypeOf(e))} · ${esc(e.category)}${isEventCancelled(e)?' · <b style="color:var(--danger)">CANCELLED</b>':''}</p>
+    <h4 style="margin:14px 0 4px;font-size:.95rem;">About</h4>
+    <p style="font-size:.88rem;">${esc(e.description||'No description published for this programme.')}</p>
+    <h4 style="margin:16px 0 8px;font-size:.95rem;">Rules</h4>
     <ol style="padding-left:20px; display:flex; flex-direction:column; gap:10px; margin:0;">
       ${rules.map(r=>`<li>${esc(r)}</li>`).join('') || '<li>No specific rules published for this event.</li>'}
     </ol>
+    <div class="modal-actions">
+      ${isEventLive(e) ? `<a class="btn btn-primary btn-sm" href="#/register/${esc(eventSlug(e))}">Register for this event</a>` : ''}
+    </div>
   `);
 }
 
@@ -939,7 +1834,7 @@ function homeMusicToggleHtml(){
   return `<button class="btn btn-outline" data-action="toggle-home-music">${playing?'🔊 Music On':'🔇 Music Off'}</button>`;
 }
 function renderPoints(){
-  const sorted = STATE.points.slice().sort((a,b)=>b.points-a.points);
+  const sorted = sortedTeamStandings();
   return `
   <section class="section">
     <div class="container">
@@ -949,6 +1844,8 @@ function renderPoints(){
         <p>Total points for each house, broken down by General, Category-wise and Event Type.</p>
         <div style="margin-top:14px; display:flex; gap:10px; justify-content:center; flex-wrap:wrap;"><a href="#tv" class="btn btn-primary btn-sm">📺 TV Display Mode</a>${pointsMusicToggleHtml()}</div>
       </div>
+      ${teamLeaderboardShellHtml()}
+      <div style="height:34px"></div>
       ${categoryLeadersStripHtml()}
       <div class="grid grid-3" style="grid-template-columns:1fr;">
         ${sorted.map((p,i)=>pointsCardHtml(p,i+1)).join('') || '<div class="empty-state">No teams yet.</div>'}
@@ -1241,20 +2138,122 @@ function downloadCertificate(data){
   link.click();
 }
 
-/* ================= RESULTS ================= */
+/* ================= RESULTS =================
+   Search works across name, registration number, team/house, event
+   and category. Results and registrations are both searched. */
+function eventNamesInResults(){
+  const seen = [];
+  STATE.results.forEach(r=>{ if(r.eventName && seen.indexOf(r.eventName)<0) seen.push(r.eventName); });
+  return seen.sort();
+}
+function allTeams(){ return (STATE.settings.rosterTeams||[]).slice().sort(); }
+function resultsSearchHtml(compact){
+  const f = STATE.resultFilters;
+  return `<div class="search-shell" id="resultsSearchHost">
+    <div class="search-row">
+      <div class="search-input-wrap">
+        <span class="ico">🔍</span>
+        <input type="text" id="resSearch" class="search-input" placeholder="Enter student name / registration no. / team…" value="${esc(f.q)}" autocomplete="off">
+        ${f.q ? '<button class="search-clear" data-action="clear-result-search" aria-label="Clear search">×</button>' : ''}
+      </div>
+    </div>
+    <div class="filter-row">
+      <select id="resCategory">
+        <option value="">All Categories</option>
+        ${PARTICIPATION_CATEGORIES.map(c=>`<option value="${esc(c)}" ${f.category===c?'selected':''}>${esc(c)}</option>`).join('')}
+      </select>
+      <select id="resEvent">
+        <option value="">All Events</option>
+        ${eventNamesInResults().map(n=>`<option value="${esc(n)}" ${f.event===n?'selected':''}>${esc(n)}</option>`).join('')}
+      </select>
+      <select id="resTeam">
+        <option value="">All Teams</option>
+        ${allTeams().map(t=>`<option value="${esc(t)}" ${f.team===t?'selected':''}>${esc(t)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="results-count" style="margin-top:12px;margin-bottom:0;">${resultsSearchCountHtml()}</div>
+  </div>
+  <div id="resultsSearchResults">${resultsSearchResultsHtml(compact)}</div>`;
+}
+function resultsSearchCountHtml(){
+  if(!hasActiveResultSearch()) return '';
+  const r = matchingResults().length;
+  const g = matchingRegistrations().length;
+  return `${r} result${r===1?'':'s'}${g?` · ${g} registration${g===1?'':'s'}`:''} found`;
+}
+function hasActiveResultSearch(){
+  const f = STATE.resultFilters;
+  return !!(f.q || f.category || f.event || f.team);
+}
+function matchText(hay, q){ return String(hay||'').toLowerCase().indexOf(q)>=0; }
+function matchingResults(){
+  const f = STATE.resultFilters;
+  const q = f.q.trim().toLowerCase();
+  return STATE.results.filter(r=>{
+    if(f.event && r.eventName!==f.event) return false;
+    const ev = STATE.events.find(e=>e.name===r.eventName);
+    const evCat = ev ? ev.category : '';
+    if(f.category && evCat!==f.category) return false;
+    const teams = [r.firstTeam,r.secondTeam,r.thirdTeam].filter(Boolean);
+    if(f.team && teams.indexOf(f.team)<0) return false;
+    if(q){
+      const names = [r.firstWinner,r.secondWinner,r.thirdWinner].filter(Boolean);
+      const hit = names.some(n=>matchText(n,q)) || teams.some(t=>matchText(t,q)) || matchText(r.eventName,q);
+      if(!hit) return false;
+    }
+    return true;
+  }).sort((a,b)=> String(b.date).localeCompare(String(a.date)));
+}
+function matchingRegistrations(){
+  const f = STATE.resultFilters;
+  const q = f.q.trim().toLowerCase();
+  if(!q) return [];
+  return STATE.registrations.filter(r=>
+    matchText(r.name,q) || matchText(r.regNumber,q) || matchText(r.regNo,q) ||
+    matchText(r.team,q) || matchText(r.eventName,q) || matchText(r.category,q)
+  ).slice(0,25);
+}
+function resultsSearchResultsHtml(compact){
+  if(!hasActiveResultSearch()){
+    if(compact) return '<div class="empty-state" style="padding:26px 10px;">Start typing to search results.</div>';
+    return '';
+  }
+  const res = matchingResults();
+  const regs = matchingRegistrations();
+  if(!res.length && !regs.length){
+    return '<div class="empty-state" style="padding:36px 10px;">No results match your search. Try a different name, registration number, team or event.</div>';
+  }
+  const regHtml = regs.length ? `
+    <h3 style="margin:22px 0 10px;font-size:1.05rem;">Matching registrations (${regs.length})</h3>
+    ${regs.map(r=>{
+      const pos = r.status==='APPROVED'?'✓':(r.status==='REJECTED'?'✕':'…');
+      return `<div class="res-hit">
+        <div class="rh-pos">${pos}</div>
+        <div class="rh-body">
+          <div class="rh-name">${esc(r.name||'—')}</div>
+          <div class="rh-meta">${esc(r.regNumber||'')} · ${esc(r.team||'')} · ${esc(r.category||'')} · ${esc(r.eventName||'')}</div>
+        </div>
+        <div class="reg-admin-id">${esc(r.regNo||'')}</div>
+      </div>`;
+    }).join('')}` : '';
+  if(compact){
+    return `${res.length ? `<div class="results-count" style="margin-bottom:10px;">${res.length} result${res.length===1?'':'s'} found</div>` : ''}
+      ${res.map(r=>resultCardHtml(r)).join('')}${regHtml}`;
+  }
+  return `<div class="grid grid-3">
+    ${res.map(r=>resultCardHtml(r)).join('') || '<div class="empty-state">No announced result matches.</div>'}
+  </div>${regHtml}`;
+}
 function renderResults(){
-  const sorted = STATE.results.slice().sort((a,b)=> b.date.localeCompare(a.date));
   return `
   <section class="section">
     <div class="container">
       <div class="section-head">
         <div class="eyebrow">Announced</div>
         <h2>${esc(heading('results','Event Results'))}</h2>
-        <p>${sorted.length} result${sorted.length===1?'':'s'} announced so far.</p>
+        <p>${STATE.results.length} result${STATE.results.length===1?'':'s'} announced so far.</p>
       </div>
-      <div class="grid grid-3">
-        ${sorted.map(r=>resultCardHtml(r)).join('') || '<div class="empty-state">No results announced yet.</div>'}
-      </div>
+      ${resultsSearchHtml(false)}
     </div>
   </section>`;
 }
@@ -1421,27 +2420,29 @@ function openMemberModal(id){
   const m = STATE.teamMembers.find(x=>x.id===id); if(!m) return;
   showModal(`<button class="modal-close" data-action="close-modal">×</button>${memberProfileCardHtml(m)}`);
 }
-function individualLeaderboardHtml(limit){
-  const sorted = STATE.teamMembers.slice().sort((a,b)=>(b.points||0)-(a.points||0));
-  const top = limit ? sorted.slice(0,limit) : sorted;
-  const maxPts = sorted.length ? (sorted[0].points||0) : 0;
+function individualLeaderboardHtml(){
+  const cat = STATE.individualCategory;
+  const sorted = individualStandings(cat);
   return `<div class="card reveal" style="margin-bottom:30px;">
-    <h3 style="margin-top:0;">🏆 Individual Leaderboard${limit && sorted.length>limit?' — Top '+limit:''}</h3>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Rank</th><th>Chest No.</th><th>Name</th><th>Team</th><th>Category</th><th>Points</th><th></th></tr></thead>
-      <tbody>
-        ${top.map((m,i)=>{
-          const isLeader = maxPts>0 && (m.points||0)===maxPts;
-          return `<tr class="${isLeader?'pb-leader':''}">
-            <td>${i+1}</td><td>${esc(m.chestNumber)}</td>
-            <td>${isLeader?'👑 ':''}${esc(m.name)}</td>
-            <td><span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:9px;height:9px;border-radius:50%;background:${esc(teamColor(m.team))};display:inline-block;"></span>${esc(m.team)}</span></td>
-            <td>${esc(m.category)}</td><td class="points-cell">${m.points||0}</td>
-            <td><button class="icon-btn" data-action="open-celebration" data-name="${esc(m.name)}" data-group="${esc(m.team)}" data-category="${esc(m.category)}" data-position="${i+1}" data-points="${m.points||0}">🎉 Celebrate</button></td>
-          </tr>`;
-        }).join('') || `<tr><td colspan="7" style="color:var(--ink-soft);">No participants yet.</td></tr>`}
-      </tbody>
-    </table></div>
+    <h3 style="margin-top:0;">🏆 Individual Leaderboard — ${esc(cat)}</h3>
+    <div class="cat-tabs" style="justify-content:flex-start;margin-bottom:18px;">
+      ${PARTICIPATION_CATEGORIES.map(c=>`<button class="cat-tab ${cat===c?'active':''}" data-action="ind-category" data-val="${esc(c)}">${esc(c)}</button>`).join('')}
+    </div>
+    <div class="ind-grid">
+      ${sorted.slice(0,3).map((m,i)=>{
+        const photo = photoSrc(m.photo) || avatarUrl(m.name||'participant');
+        const medal = ['🥇','🥈','🥉'][i];
+        return `<div class="ind-card ${i===0?'rank-1':''}">
+          <div class="ind-medal">${medal}</div>
+          <img class="ind-avatar" src="${esc(photo)}" alt="${esc(m.name||'')}" onerror="this.onerror=null;this.src='${esc(avatarUrl(m.name||'p'))}';">
+          <div class="ind-name">${esc(m.name||'—')}</div>
+          <div class="ind-team">${m.chestNumber?esc(m.chestNumber)+' · ':''}${esc(m.team||'—')}</div>
+          <div class="ind-pts">${m._points}<small>PTS</small></div>
+          <div style="margin-top:10px;"><button class="icon-btn" data-action="open-celebration" data-name="${esc(m.name||'')}" data-group="${esc(m.team||'')}" data-category="${esc(cat)}" data-position="${i+1}" data-points="${m._points}">🎉 Celebrate</button></div>
+        </div>`;
+      }).join('') || '<div class="empty-state" style="grid-column:1/-1;">No ' + esc(cat) + ' participants yet.</div>'}
+    </div>
+    ${sorted.length>3 ? `<p class="results-count" style="margin-top:14px;margin-bottom:0;">Showing the top 3 of ${sorted.length} ${esc(cat)} participants. Full rankings are listed per team below.</p>` : ''}
   </div>`;
 }
 function renderTeamsPage(){
@@ -1478,7 +2479,7 @@ function renderTeamsPage(){
       <div class="filterbar">
         <input type="text" id="teamSearchInput" placeholder="Type a name or chest number…" value="${esc(q)}">
       </div>
-      ${individualLeaderboardHtml(10)}
+      ${individualLeaderboardHtml()}
       ${rosterTeams.map(team=>{
         const roster = STATE.teamMembers.filter(m=>m.team===team);
         return `
@@ -1574,7 +2575,8 @@ function renderAdmin(){
     </section>`;
   }
   const tabs = [
-    ['events','Events'], ['points','Points'], ['results','Results'],
+    ['events','Events'], ['registrations','Registrations'], ['branding','Branding'],
+    ['points','Points'], ['results','Results'],
     ['highlights','Highlights'], ['executives','Executives'], ['teams','Teams'],
     ['backgrounds','Backgrounds'], ['settings','Settings']
   ];
@@ -1590,7 +2592,7 @@ function renderAdmin(){
       </div>
       <div class="admin-wrap">
         <div class="admin-side">
-          ${tabs.map(t=>`<button class="${STATE.adminTab===t[0]?'active':''}" data-action="admin-tab" data-tab="${t[0]}">${t[1]}</button>`).join('')}
+          ${tabs.map(t=>`<button class="${STATE.adminTab===t[0]?'active':''}" data-action="admin-tab" data-tab="${t[0]}">${t[1]}${t[0]==='registrations'&&STATE.registrations.length?' ('+STATE.registrations.length+')':''}</button>`).join('')}
         </div>
         <div class="admin-main">
           ${adminTabContent()}
@@ -1602,6 +2604,8 @@ function renderAdmin(){
 function adminTabContent(){
   switch(STATE.adminTab){
     case 'events': return adminEvents();
+    case 'registrations': return adminRegistrations();
+    case 'branding': return adminBranding();
     case 'points': return adminPoints();
     case 'results': return adminResults();
     case 'highlights': return adminHighlights();
@@ -1612,20 +2616,299 @@ function adminTabContent(){
     default: return '';
   }
 }
+
+/* ---------------- ADMIN · FEST BRANDING ---------------- */
+function adminBranding(){
+  const s = STATE.settings;
+  const t = Object.assign({}, DEFAULT_FEST_BRANDING.theme, s.theme||{});
+  return `
+  <h3>Fest Branding</h3>
+  <div class="card" style="margin-bottom:22px;">
+    <h4 style="margin-top:0;">Fest Logo</h4>
+    <p style="font-size:.85rem;color:var(--ink-soft);margin-top:0;">Upload a transparent PNG / SVG / WebP. It replaces the mark in the website header, homepage hero, registration pages, result pages, event pages and the footer — everywhere at once. Nothing is hard-coded.</p>
+    <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
+      <div style="text-align:center;">
+        <div style="width:150px;height:110px;border:1px solid var(--line);border-radius:12px;background:var(--bg-alt);display:flex;align-items:center;justify-content:center;padding:8px;overflow:hidden;">
+          <img src="${esc(festLogoSrc())}" alt="Current logo preview" style="max-width:100%;max-height:100%;object-fit:contain;" onerror="this.src='${esc(FEST_LOGO_DATA_URL)}';">
+        </div>
+        <div class="results-count" style="margin-top:6px;">Current logo preview</div>
+      </div>
+      <div style="flex:1;min-width:240px;">
+        <form data-action="save-logo">
+          <div class="field">
+            <label>Upload Logo File</label>
+            <input type="file" accept="image/png,image/svg+xml,image/webp,image/jpeg,image/*" data-photo-target="logoUrl" style="width:100%;font-size:.8rem;">
+          </div>
+          <div class="field">
+            <label>Or paste a Logo URL</label>
+            <input type="text" name="logoUrl" value="${esc(s.logoUrl||'')}" placeholder="https://…/logo.png">
+          </div>
+          <div class="reg-actions" style="justify-content:flex-start;">
+            <button class="btn btn-primary btn-sm" type="submit">💾 Save Logo</button>
+            ${s.logoUrl ? '<button class="btn btn-ghost btn-sm" type="button" data-action="reset-logo">Reset to default</button>' : ''}
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+  <h3>Fest Details</h3>
+  <div class="card" style="margin-bottom:22px;">
+    <form data-action="save-fest-details">
+      <div class="field-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="field"><label>Fest Name</label><input type="text" name="festName" value="${esc(festName())}"></div>
+        <div class="field"><label>Fest Subtitle</label><input type="text" name="festSubtitle" value="${esc(festSubtitle())}"></div>
+      </div>
+      <div class="field"><label>Tagline</label><input type="text" name="festTagline" value="${esc(festTagline())}"></div>
+      <div class="field"><label>Site Title <span style="font-weight:400;color:var(--ink-soft);">(nav bar &amp; footer)</span></label><input type="text" name="siteTitle" value="${esc(s.siteTitle||'')}"></div>
+      <div class="field"><label>Browser Tab Title</label><input type="text" name="tabTitle" value="${esc(s.tabTitle||'')}"></div>
+      <div class="field"><label>Tagline shown under the hero heading</label><textarea name="tagline">${esc(s.tagline||'')}</textarea></div>
+      <button class="btn btn-primary btn-sm" type="submit">Save Fest Details</button>
+    </form>
+  </div>
+  <h3>Colour Theme</h3>
+  <div class="card">
+    <p style="font-size:.85rem;color:var(--ink-soft);margin-top:0;">These six colours drive the entire site's design system — header, hero, buttons, cards, leaderboards, forms and footer all update instantly on save.</p>
+    <form data-action="save-theme">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+        <div class="field"><label>Primary</label><input type="color" name="primary" value="${esc(t.primary)}" style="width:100%;height:40px;padding:2px;"></div>
+        <div class="field"><label>Secondary</label><input type="color" name="primarySoft" value="${esc(t.primarySoft)}" style="width:100%;height:40px;padding:2px;"></div>
+        <div class="field"><label>Accent (Gold)</label><input type="color" name="accent" value="${esc(t.accent)}" style="width:100%;height:40px;padding:2px;"></div>
+        <div class="field"><label>Accent Light</label><input type="color" name="accentSoft" value="${esc(t.accentSoft)}" style="width:100%;height:40px;padding:2px;"></div>
+        <div class="field"><label>Clash (Crimson)</label><input type="color" name="clash" value="${esc(t.clash)}" style="width:100%;height:40px;padding:2px;"></div>
+        <div class="field"><label>Background</label><input type="color" name="background" value="${esc(t.background)}" style="width:100%;height:40px;padding:2px;"></div>
+      </div>
+      <div class="reg-actions" style="justify-content:flex-start;">
+        <button class="btn btn-primary btn-sm" type="submit">Save Theme</button>
+        <button class="btn btn-ghost btn-sm" type="button" data-action="reset-theme">Reset to default palette</button>
+      </div>
+    </form>
+  </div>`;
+}
+
+/* ---------------- ADMIN · REGISTRATIONS ---------------- */
+function adminRegistrations(){
+  const f = STATE.regFilters;
+  const q = f.q.trim().toLowerCase();
+  const list = STATE.registrations.slice().sort((a,b)=> String(b.createdAt).localeCompare(String(a.createdAt))).filter(r=>{
+    if(f.event && r.eventName!==f.event) return false;
+    if(f.category && r.category!==f.category) return false;
+    if(f.team && r.team!==f.team) return false;
+    if(f.status && r.status!==f.status) return false;
+    if(q){
+      const hit = [r.name,r.regNumber,r.regNo,r.team,r.eventName,r.klass,r.phone].some(v=>matchText(v,q));
+      if(!hit) return false;
+    }
+    return true;
+  });
+  const eventNames = [];
+  STATE.registrations.forEach(r=>{ if(r.eventName && eventNames.indexOf(r.eventName)<0) eventNames.push(r.eventName); });
+  eventNames.sort();
+  return `
+  <div class="admin-toolbar">
+    <h3 style="margin:0;">Registrations (${STATE.registrations.length})</h3>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-ghost btn-sm" data-action="export-registrations">⬇ Export CSV</button>
+      <button class="btn btn-primary btn-sm" data-action="add-registration">+ Add Manually</button>
+    </div>
+  </div>
+  <div class="notice">Every online submission from the website lands here instantly. Use the filters to search, manage status, and export. Registration is validated against cancelled events, duplicate entries and category participation limits both on the form and again at save time.</div>
+  <div class="search-shell">
+    <div class="search-row">
+      <div class="search-input-wrap">
+        <span class="ico">🔍</span>
+        <input type="text" id="regAdminSearch" class="search-input" placeholder="Search name, registration no, team, class, phone…" value="${esc(f.q)}">
+      </div>
+    </div>
+    <div class="filter-row">
+      <select id="regAdminEvent"><option value="">All Events</option>${eventNames.map(n=>`<option value="${esc(n)}" ${f.event===n?'selected':''}>${esc(n)}</option>`).join('')}</select>
+      <select id="regAdminCategory"><option value="">All Categories</option>${PARTICIPATION_CATEGORIES.map(c=>`<option value="${esc(c)}" ${f.category===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
+      <select id="regAdminTeam"><option value="">All Teams</option>${allTeams().map(t=>`<option value="${esc(t)}" ${f.team===t?'selected':''}>${esc(t)}</option>`).join('')}</select>
+    </div>
+    <div class="filter-row" style="grid-template-columns:1fr;">
+      <select id="regAdminStatus"><option value="">All Statuses</option>${REG_STATUS_VALUES.map(s=>`<option value="${s}" ${f.status===s?'selected':''}>${s}</option>`).join('')}</select>
+    </div>
+    <div class="results-count" style="margin-top:12px;margin-bottom:0;">${list.length} of ${STATE.registrations.length} registration${STATE.registrations.length===1?'':'s'}</div>
+  </div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Student</th><th>Reg. ID</th><th>Category</th><th>Team</th><th>Event</th><th>Type</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>
+      ${list.map(r=>`
+        <tr>
+          <td><b>${esc(r.name||'—')}</b><div class="results-count" style="margin:0;">Chest ${esc(r.regNumber||'—')}${r.klass?' · Class '+esc(r.klass):''}</div></td>
+          <td class="reg-admin-id">${esc(r.regNo||r.id||'—')}</td>
+          <td>${esc(r.category||'—')}</td>
+          <td>${esc(r.team||'—')}</td>
+          <td>${esc(r.eventName||'—')}</td>
+          <td><span class="chip ${r.eventType==='Stage'?'chip-stage':'chip-nonstage'}">${esc(r.eventType||'—')}</span></td>
+          <td class="reg-admin-id">${r.createdAt?new Date(r.createdAt).toLocaleDateString():'—'}</td>
+          <td><span class="chip ${r.status==='APPROVED'?'chip-open':r.status==='REJECTED'?'chip-cancelled':'chip-closed'}">${esc(r.status||'PENDING')}</span></td>
+          <td>
+            <button class="icon-btn" data-action="view-registration" data-id="${esc(r.id)}">View</button>
+            <button class="icon-btn" data-action="edit-registration" data-id="${esc(r.id)}">Edit</button>
+            <button class="icon-btn" data-action="delete-registration" data-id="${esc(r.id)}">Delete</button>
+          </td>
+        </tr>`).join('') || `<tr><td colspan="9" style="color:var(--ink-soft);">No registrations match your filters.</td></tr>`}
+    </tbody>
+  </table></div>`;
+}
+function registrationDetailsHtml(r){
+  return `<div class="card">
+    <div class="event-top">
+      <div>
+        <div class="event-cat">${esc(r.regNo||r.id||'')}</div>
+        <h3 style="margin:0;">${esc(r.name||'—')}</h3>
+      </div>
+      <span class="chip ${r.status==='APPROVED'?'chip-open':r.status==='REJECTED'?'chip-cancelled':'chip-closed'}">${esc(r.status||'PENDING')}</span>
+    </div>
+    <div class="event-meta" style="margin-top:12px;">
+      <span>🪪 Chest No.: ${esc(r.regNumber||'—')}</span>
+      <span>🏠 Team: ${esc(r.team||'—')}</span>
+      <span>📂 Category: ${esc(r.category||'—')}</span>
+      <span>📚 Class: ${esc(r.klass||'—')}</span>
+      <span>📞 Phone: ${esc(r.phone||'—')}</span>
+      <span>✉️ Email: ${esc(r.email||'—')}</span>
+      <span>🎭 Event: ${esc(r.eventName||'—')}</span>
+      <span>🏷️ Event Type: ${esc(r.eventType||'—')}</span>
+      <span>🕐 Registered: ${r.createdAt?new Date(r.createdAt).toLocaleString():'—'}</span>
+    </div>
+    ${r.notes?`<p style="font-size:.85rem;margin-top:12px;"><b>Notes:</b> ${esc(r.notes)}</p>`:''}
+  </div>`;
+}
+function openViewRegistrationModal(id){
+  const r = STATE.registrations.find(x=>x.id===id); if(!r) return;
+  showModal(`
+    <button class="modal-close" data-action="close-modal">×</button>
+    <h3>Registration Details</h3>
+    ${registrationDetailsHtml(r)}
+    <div class="modal-actions">
+      <button class="btn btn-ghost btn-sm" data-action="set-registration-status" data-id="${esc(r.id)}" data-status="REJECTED">Reject</button>
+      <button class="btn btn-ghost btn-sm" data-action="set-registration-status" data-id="${esc(r.id)}" data-status="PENDING">Set Pending</button>
+      <button class="btn btn-primary btn-sm" data-action="set-registration-status" data-id="${esc(r.id)}" data-status="APPROVED">Approve</button>
+    </div>`);
+}
+function openEditRegistrationModal(id){
+  const r = STATE.registrations.find(x=>x.id===id); if(!r) return;
+  const fields = [
+    {key:'name',label:'Student Name',type:'text'},
+    {key:'regNumber',label:'Registration / Chest No.',type:'text'},
+    {key:'team',label:'Team / House',type:'select',options:(STATE.settings.rosterTeams||[])},
+    {key:'category',label:'Category',type:'select',options:PARTICIPATION_CATEGORIES},
+    {key:'klass',label:'Class / Grade',type:'text'},
+    {key:'phone',label:'Phone',type:'text'},
+    {key:'email',label:'Email',type:'text'},
+    {key:'notes',label:'Notes',type:'textarea'},
+    {key:'status',label:'Status',type:'select',options:REG_STATUS_VALUES}
+  ];
+  showModal(`
+    <button class="modal-close" data-action="close-modal">×</button>
+    <h3>Edit Registration — ${esc(r.regNo||r.name||'')}</h3>
+    <div class="notice">Event: ${esc(r.eventName||'—')} · ${esc(r.eventType||'')}. The programme and event type are set when the registration is created and are not editable here.</div>
+    <form data-action="save-registration" data-id="${esc(id)}">
+      ${fields.map(f=>fieldHtml(f, r[f.key])).join('')}
+      <div class="modal-actions"><button type="submit" class="btn btn-primary btn-sm">Save</button></div>
+    </form>`);
+}
+function openAddRegistrationModal(){
+  const openEvents = STATE.events.filter(e=>isEventLive(e));
+  if(!openEvents.length){ toast('No open events to register for.'); return; }
+  const ev = openEvents[0];
+  showModal(`
+    <button class="modal-close" data-action="close-modal">×</button>
+    <h3>Add Registration (Manual)</h3>
+    <div class="notice">Use this for phone-in or paper registrations. The same category participation limits and duplicate checks are applied as for online submissions.</div>
+    <form data-action="save-registration" data-id="">
+      <div class="field"><label>Event <span class="req">*</span></label>
+        <select name="eventId" id="adminRegEvent" required>
+          ${openEvents.map(e=>`<option value="${esc(e.id)}" ${e.id===ev.id?'selected':''}>${esc(e.name)} — ${esc(eventTypeOf(e))}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="field"><label>Student Name <span class="req">*</span></label><input type="text" name="name" required></div>
+        <div class="field"><label>Registration / Chest No. <span class="req">*</span></label><input type="text" name="regNumber" required></div>
+      </div>
+      <div class="field-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="field"><label>Category <span class="req">*</span></label><select name="category" id="adminRegCategory">${PARTICIPATION_CATEGORIES.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select></div>
+        <div class="field"><label>Team / House <span class="req">*</span></label><select name="team" id="adminRegTeam"><option value="">— Select —</option>${(STATE.settings.rosterTeams||[]).map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
+      </div>
+      <div class="field"><label>Status</label><select name="status">${REG_STATUS_VALUES.map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
+      <div class="field"><label>Notes</label><textarea name="notes"></textarea></div>
+      <div class="modal-actions"><button type="submit" class="btn btn-primary btn-sm">Save Registration</button></div>
+    </form>`);
+}
+function exportRegistrationsCsv(){
+  const f = STATE.regFilters;
+  const q = f.q.trim().toLowerCase();
+  const list = STATE.registrations.slice().sort((a,b)=> String(b.createdAt).localeCompare(String(a.createdAt))).filter(r=>{
+    if(f.event && r.eventName!==f.event) return false;
+    if(f.category && r.category!==f.category) return false;
+    if(f.team && r.team!==f.team) return false;
+    if(f.status && r.status!==f.status) return false;
+    if(q && !([r.name,r.regNumber,r.regNo,r.team,r.eventName,r.klass,r.phone].some(v=>matchText(v,q)))) return false;
+    return true;
+  });
+  if(!list.length){ toast('Nothing to export with the current filters.'); return; }
+  const cols = ['Reg ID','Student Name','Chest No','Category','Team','Class','Event','Event Type','Status','Registered On','Phone','Email','Notes'];
+  const cell = v => '"' + String(v==null?'':v).replace(/"/g,'""') + '"';
+  const csv = [cols.join(',')].concat(list.map(r=>[
+    r.regNo||r.id, r.name, r.regNumber, r.category, r.team, r.klass,
+    r.eventName, r.eventType, r.status, r.createdAt||'', r.phone, r.email, r.notes
+  ].map(cell).join(','))).join('\r\n');
+  const blob = new Blob(['\ufeff' + csv], {type:'text/csv;charset=utf-8;'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'thanawuush26-registrations.csv';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  toast('Exported ' + list.length + ' registration' + (list.length===1?'':'s') + '.');
+}
+
 function adminEvents(){
   const sorted = STATE.events.slice().sort(compareEvents);
+  const live = sorted.filter(e=>eventStatusOf(e)==='ACTIVE');
+  const cancelled = sorted.filter(e=>eventStatusOf(e)==='CANCELLED');
+  const inactive = sorted.filter(e=>eventStatusOf(e)==='INACTIVE');
   return `
-  <div class="admin-toolbar"><h3 style="margin:0;">Events (${STATE.events.length})</h3><button class="btn btn-primary btn-sm" data-action="add-event">+ Add Event</button></div>
+  <div class="admin-toolbar"><h3 style="margin:0;">Events (${STATE.events.length})</h3><div style="display:flex;gap:8px;">
+    <button class="btn btn-ghost btn-sm" data-action="toggle-show-cancelled">${STATE.showCancelled?'Hide':'Show'} cancelled (${cancelled.length})</button>
+    <button class="btn btn-primary btn-sm" data-action="add-event">+ Add Event</button>
+  </div></div>
+  <div class="notice">Every active event has its own shareable registration link. Use <b>Copy Registration Link</b> or <b>Share Registration</b> to send it to students on WhatsApp, Instagram or Telegram. Cancelled events stay in the database (historical registrations and results are preserved) but disappear from the public site and cannot accept new registrations.</div>
+  ${eventAdminTableHtml(live, 'Active Events')}
+  ${inactive.length && STATE.showCancelled ? eventAdminTableHtml(inactive, 'Inactive Events') : ''}
+  ${cancelled.length && STATE.showCancelled ? eventAdminTableHtml(cancelled, 'Cancelled Events') : ''}`;
+}
+function eventAdminTableHtml(list, title){
+  if(!list.length) return '';
+  return `<h4 style="margin:22px 0 10px;">${esc(title)} (${list.length})</h4>
   <div class="table-wrap"><table>
-    <thead><tr><th>Name</th><th>Category</th><th>Date</th><th>Time</th><th>Venue</th><th>Participants</th><th>Status</th><th></th></tr></thead>
+    <thead><tr><th>Event</th><th>Code</th><th>Category</th><th>Type</th><th>Status</th><th>Registration</th><th>Registered</th><th>Share Link</th><th></th></tr></thead>
     <tbody>
-      ${sorted.map(e=>`
+      ${list.map(e=>{
+        const st = eventStatusOf(e);
+        const open = eventRegWindowOpen(e);
+        return `
         <tr>
-          <td>${esc(e.name)}</td><td>${esc(e.category)}</td><td>${e.date}</td><td>${fmtTime(e.time)}</td><td>${esc(e.venue)}</td>
-          <td>${e.participants ? esc(e.participants) : '—'}</td>
-          <td><span class="badge ${badgeClass(computeStatus(e))}">${computeStatus(e)}</span></td>
-          <td><button class="icon-btn" data-action="edit-event" data-id="${e.id}">Edit</button><button class="icon-btn" data-action="delete-event" data-id="${e.id}">Delete</button></td>
-        </tr>`).join('')}
+          <td><b>${esc(e.name)}</b><div class="results-count" style="margin:0;">${fmtDate(e.date)} · ${fmtTime(e.time)} · ${esc(e.venue)}</div></td>
+          <td class="reg-admin-id">${esc(e.eventCode||'—')}</td>
+          <td>${esc(e.category)}</td>
+          <td><span class="chip ${eventTypeOf(e)==='Stage'?'chip-stage':'chip-nonstage'}">${esc(eventTypeOf(e))}</span></td>
+          <td><span class="chip ${st==='ACTIVE'?'chip-active':st==='CANCELLED'?'chip-cancelled':'chip-inactive'}">${esc(st)}</span></td>
+          <td><span class="chip ${open?'chip-open':'chip-closed'}">${open?'OPEN':esc(eventRegStatus(e))}</span></td>
+          <td class="reg-admin-id">${eventRegCount(e)}${e.maxParticipants?' / '+esc(e.maxParticipants):''}</td>
+          <td>
+            <input type="text" class="link-field" readonly style="min-width:150px;font-size:.68rem;" value="${esc(eventRegUrl(e))}" aria-label="Registration link">
+          </td>
+          <td style="white-space:nowrap;">
+            <button class="icon-btn" data-action="copy-reg-link" data-id="${esc(e.id)}">📋 Copy Link</button>
+            <button class="icon-btn" data-action="share-reg-link" data-id="${esc(e.id)}">📤 Share</button><br>
+            <button class="icon-btn" data-action="edit-event" data-id="${esc(e.id)}">Edit</button>
+            <button class="icon-btn" data-action="set-event-status" data-id="${esc(e.id)}" data-status="CANCELLED">Cancel</button>
+            <button class="icon-btn" data-action="set-event-status" data-id="${esc(e.id)}" data-status="INACTIVE">Deactivate</button>
+            <button class="icon-btn" data-action="set-event-status" data-id="${esc(e.id)}" data-status="ACTIVE">Activate</button>
+            <button class="icon-btn" data-action="delete-event" data-id="${esc(e.id)}">Delete</button>
+          </td>
+        </tr>`;
+      }).join('')}
     </tbody>
   </table></div>`;
 }
@@ -1792,16 +3075,38 @@ function adminBackgrounds(){
 }
 function adminSettings(){
   const s = STATE.settings;
+  const lim = limits();
   return `
+  <h3>Participation Limits</h3>
+  <div class="card" style="margin-bottom:22px;">
+    <p style="font-size:.85rem;color:var(--ink-soft);margin-top:0;">Category-wise minimum and maximum program participation rules. These values are stored in the database and used by the registration form's live progress panel and by the validation that runs when a student submits — so no limits are ever hard-coded on the frontend.</p>
+    <form data-action="save-participation-limits">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Category</th><th>Min Stage Programs</th><th>Min Non-Stage Programs</th><th>Max Total Programs</th></tr></thead>
+          <tbody>
+            ${PARTICIPATION_CATEGORIES.map(c=>`
+              <tr>
+                <td><b>${esc(c)}</b></td>
+                <td><input type="number" min="0" name="${esc(c)}|minStage" value="${lim[c].minStage}" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);"></td>
+                <td><input type="number" min="0" name="${esc(c)}|minNonStage" value="${lim[c].minNonStage}" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);"></td>
+                <td><input type="number" min="0" name="${esc(c)}|maxTotal" value="${lim[c].maxTotal}" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);"></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="reg-actions" style="justify-content:flex-start;margin-top:16px;">
+        <button class="btn btn-primary btn-sm" type="submit">Save Limits</button>
+        <button class="btn btn-ghost btn-sm" type="button" data-action="reset-limits">Reset to defaults</button>
+      </div>
+    </form>
+  </div>
   <h3>Site Content</h3>
   <div class="card" style="margin-bottom:22px;">
     <form data-action="save-site-settings">
-      <div class="field"><label>Site Title <span style="font-weight:400;color:var(--ink-soft);">(nav bar &amp; footer)</span></label><input type="text" name="siteTitle" value="${esc(s.siteTitle)}"></div>
-      <div class="field"><label>Homepage Hero Heading</label><input type="text" name="heroHeading" value="${esc(s.heroHeading||s.siteTitle)}"></div>
-      <div class="field"><label>Browser Tab Title</label><input type="text" name="tabTitle" value="${esc(s.tabTitle||s.siteTitle)}"></div>
-      <div class="field"><label>Logo <span style="font-weight:400;color:var(--ink-soft);">(leave blank to use the default mark)</span></label><input type="text" name="logoUrl" value="${esc(s.logoUrl||'')}" placeholder="Paste a photo URL — or upload a file below"><input type="file" accept="image/*" data-photo-target="logoUrl" style="margin-top:6px;width:100%;font-size:.8rem;"></div>
-      <div class="field"><label>Tagline</label><textarea name="tagline">${esc(s.tagline)}</textarea></div>
-      <div class="field"><label>About Text</label><textarea name="aboutText">${esc(s.aboutText)}</textarea></div>
+      <div class="field"><label>Logo <span style="font-weight:400;color:var(--ink-soft);">(leave blank to use the default mark — or upload in the Branding tab)</span></label><input type="text" name="logoUrl" value="${esc(s.logoUrl||'')}" placeholder="Paste a photo URL — or upload a file below"><input type="file" accept="image/*" data-photo-target="logoUrl" style="margin-top:6px;width:100%;font-size:.8rem;"></div>
+      <div class="field"><label>Tagline shown under the hero heading</label><textarea name="tagline">${esc(s.tagline||'')}</textarea></div>
+      <div class="field"><label>About Text</label><textarea name="aboutText">${esc(s.aboutText||'')}</textarea></div>
       <div class="field"><label>Contact Email</label><input type="text" name="contactEmail" value="${esc(s.contactEmail)}"></div>
       <div class="field"><label>Contact Phone</label><input type="text" name="contactPhone" value="${esc(s.contactPhone)}"></div>
       <div class="field"><label>Contact Address</label><input type="text" name="contactAddress" value="${esc(s.contactAddress)}"></div>
@@ -1817,7 +3122,9 @@ function adminSettings(){
     <p style="font-size:.85rem;color:var(--ink-soft);margin-top:0;">Change the main heading shown at the top of each page.</p>
     <form data-action="save-page-headings">
       <div class="field"><label>Homepage — Featured Highlight section</label><input type="text" name="homeFeatured" value="${esc(heading('homeFeatured','Featured Highlight'))}"></div>
-      <div class="field"><label>Homepage — Points Table section</label><input type="text" name="homePoints" value="${esc(heading('homePoints','Current Points Table'))}"></div>
+      <div class="field"><label>Homepage — Team Leaderboard section</label><input type="text" name="homePoints" value="${esc(heading('homePoints','Team Leaderboard'))}"></div>
+      <div class="field"><label>Homepage — Individual Leaderboard section</label><input type="text" name="homeIndividual" value="${esc(heading('homeIndividual','Individual Leaderboard'))}"></div>
+      <div class="field"><label>Homepage — Online Registration section</label><input type="text" name="homeRegister" value="${esc(heading('homeRegister','Online Registration'))}"></div>
       <div class="field"><label>Events page</label><input type="text" name="events" value="${esc(heading('events','Festival Events'))}"></div>
       <div class="field"><label>Schedule page</label><input type="text" name="schedule" value="${esc(heading('schedule','Festival Schedule'))}"></div>
       <div class="field"><label>Points Table page</label><input type="text" name="points" value="${esc(heading('points','Points Table'))}"></div>
@@ -1826,7 +3133,7 @@ function adminSettings(){
       <div class="field"><label>Highlights page</label><input type="text" name="highlights" value="${esc(heading('highlights','Highlights'))}"></div>
       <div class="field"><label>Executive Members page</label><input type="text" name="exec" value="${esc(heading('exec','Executive Members'))}"></div>
       <div class="field"><label>Teams page</label><input type="text" name="teams" value="${esc(heading('teams','Teams'))}"></div>
-      <div class="field"><label>About page</label><input type="text" name="about" value="${esc(heading('about','DarussalamFest'))}"></div>
+      <div class="field"><label>About page</label><input type="text" name="about" value="${esc(heading('about','Thanawuush\'26'))}"></div>
       <button class="btn btn-primary btn-sm" type="submit">Save Headings</button>
     </form>
   </div>
@@ -1909,13 +3216,20 @@ function resizeImageFile(file, maxDim, quality){
 }
 
 const EVENT_FIELDS = [
-  {key:'name', label:'Event Name', type:'text'},
+  {key:'eventCode', label:'Event Code', type:'text'},
   {key:'category', label:'Category', type:'select', options:CATEGORIES},
+  {key:'eventType', label:'Event Type', type:'select', options:EVENT_TYPES},
+  {key:'description', label:'Description', type:'textarea'},
+  {key:'rules', label:'Event-Specific Rules (one per line)', type:'textarea'},
   {key:'date', label:'Date', type:'date'},
   {key:'time', label:'Time', type:'time'},
   {key:'venue', label:'Venue', type:'select', options:VENUES},
+  {key:'status', label:'Event Status', type:'select', options:EVENT_STATUSES},
+  {key:'regStatus', label:'Registration', type:'select', options:REG_STATUSES},
+  {key:'regStart', label:'Registration Start', type:'date'},
+  {key:'regEnd', label:'Registration End', type:'date'},
+  {key:'maxParticipants', label:'Maximum Participants', type:'text'},
   {key:'participants', label:'Participants (comma-separated names)', type:'text'},
-  {key:'rules', label:'Event-Specific Rules (one per line, optional)', type:'textarea'},
   {key:'statusOverride', label:'Manual Status Override', type:'select', options:['','Upcoming','Ongoing','Completed']}
 ];
 function eventProgramOf(name, cat){
@@ -1926,23 +3240,36 @@ function eventProgramOf(name, cat){
 }
 function openEventModal(id){
   const isEdit = !!id;
-  const ev = isEdit ? STATE.events.find(e=>e.id===id) : { name:'', category:CATEGORIES[0], date:FEST_DATES[0], time:TIMES[0], venue:VENUES[0], participants:'', rules:'', statusOverride:'' };
+  const ev = isEdit ? STATE.events.find(e=>e.id===id) : {
+    name:'', category:PARTICIPATION_CATEGORIES[0], eventType:'Stage', eventCode:'',
+    date:FEST_DATES[0], time:TIMES[0], venue:VENUES[0], participants:'', description:'', rules:'',
+    status:'ACTIVE', regStatus:'OPEN', regStart:'', regEnd:'', maxParticipants:'', statusOverride:''
+  };
   const category = ev.category || CATEGORIES[0];
   const programs = OFFICIAL_PROGRAMS.filter(p=>p[2]===category);
-  const currentProgram = eventProgramOf(ev.name, category);
+  const currentProgram = eventProgramOf(ev.name, category) || (ev.programName || '');
   const isCustom = !!(ev.name && !currentProgram);
-  const fields = EVENT_FIELDS.filter(f=>f.key!=='name' && f.key!=='category');
+  const fields = EVENT_FIELDS.filter(f=>f.key!=='category' && f.key!=='eventType');
   showModal(`
     <button class="modal-close" data-action="close-modal">×</button>
     <h3>${isEdit?'Edit':'Add'} Event</h3>
+    ${isEdit ? `<div class="notice">Registration link: <b>${esc(eventRegUrl(ev))}</b> — <button type="button" class="icon-btn" data-action="copy-reg-link" data-id="${esc(ev.id)}">📋 Copy</button> <button type="button" class="icon-btn" data-action="share-reg-link" data-id="${esc(ev.id)}">📤 Share</button><br>${eventRegCount(ev)} registration(s) recorded${isEventCancelled(ev)?' · <b style="color:var(--danger)">This event is CANCELLED — cancelling keeps all historical data intact.</b>':''}</div>` : ''}
     <form data-action="save-event" data-id="${id||''}">
       <div class="field">
-        <label>Category (shows this category's events below)</label>
+        <label>Category (shows this category's programs below)</label>
         <select name="category" id="evmCategory">${CATEGORIES.map(c=>`<option value="${esc(c)}" ${c===category?'selected':''}>${esc(c)}</option>`).join('')}</select>
       </div>
-      <div class="field">
-        <label>Event Name</label>
-        <select name="evmProgram" id="evmProgram">${programs.map(p=>`<option value="${esc(p[1])}" ${p[1]===currentProgram?'selected':''}>${esc(p[1])}</option>`).join('')}</select>
+      <div class="field-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="field">
+          <label>Event Name</label>
+          <select name="evmProgram" id="evmProgram">${programs.map(p=>`<option value="${esc(p[1])}" ${p[1]===currentProgram?'selected':''}>${esc(p[1])}</option>`).join('')}</select>
+        </div>
+        <div class="field">
+          <label>Event Type <span class="req">*</span> <span style="font-weight:400;color:var(--ink-soft);">(used for participation limits)</span></label>
+          <select name="eventType" id="evmEventType">
+            ${EVENT_TYPES.map(t=>`<option value="${t}" ${t===eventTypeOf(ev)?'selected':''}>${t==='Stage'?'🎭 Stage':'📝 Non-Stage'}</option>`).join('')}
+          </select>
+        </div>
       </div>
       <div class="field">
         <label style="display:flex;align-items:center;gap:8px;font-weight:500;"><input type="checkbox" id="evmCustom" ${isCustom?'checked':''}> Not in the list? Type the name manually</label>
@@ -1950,7 +3277,7 @@ function openEventModal(id){
       </div>
       ${fields.map(f=>fieldHtml(f, ev[f.key])).join('')}
       <div class="modal-actions">
-        ${isEdit?'<button type="button" class="btn btn-danger btn-sm" data-action="delete-event" data-id="'+id+'">Delete</button>':''}
+        ${isEdit?`<button type="button" class="btn btn-danger btn-sm" data-action="set-event-status" data-id="${id}" data-status="CANCELLED">Cancel Event</button><button type="button" class="btn btn-danger btn-sm" data-action="delete-event" data-id="${id}">Delete</button>`:''}
         <button type="submit" class="btn btn-primary btn-sm">Save Event</button>
       </div>
     </form>
@@ -2137,6 +3464,53 @@ function openShareModal(){
       ${canNativeShare ? `<button class="btn btn-ghost btn-sm" style="margin-top:14px;" data-action="native-share">Share via device…</button>` : ''}
     </div>
   `);
+}
+
+/* Credits (or debits) the individual scoreboard from a result so the
+   Individual Leaderboard is derived from results, not hand-typed.
+   A winner is only credited when a roster member's name matches —
+   nothing is invented, and the same pass is reversed on Undo. */
+function creditIndividualPoints(result, sign){
+  const winners = [
+    { name: result.firstWinner,  team: result.firstTeam,  pts: Number(result.firstPoints)||0 },
+    { name: result.secondWinner, team: result.secondTeam, pts: Number(result.secondPoints)||0 },
+    { name: result.thirdWinner,  team: result.thirdTeam,  pts: Number(result.thirdPoints)||0 }
+  ];
+  let changed = false;
+  winners.forEach(w=>{
+    if(!w.name || !w.pts) return;
+    const key = String(w.name).trim().toLowerCase();
+    STATE.teamMembers.forEach(m=>{
+      if(String(m.name||'').trim().toLowerCase() !== key) return;
+      if(w.team && m.team && String(m.team) !== String(w.team)) return;
+      m.points = Math.max(0, (Number(m.points)||0) + sign * w.pts);
+      changed = true;
+    });
+  });
+  return changed;
+}
+async function applyPointsToTables(result){
+  const credits = [[result.firstTeam, result.firstPoints||0],[result.secondTeam, result.secondPoints||0],[result.thirdTeam, result.thirdPoints||0]];
+  credits.forEach(([team, pts])=>{
+    if(!team) return;
+    let entry = STATE.points.find(p=>p.team===team);
+    if(!entry){ entry = { team, points:0 }; STATE.points.push(entry); }
+    entry.points = (entry.points||0) + pts;
+  });
+  const touched = creditIndividualPoints(result, +1);
+  if(touched) await dbSet('df:teamMembers', STATE.teamMembers);
+  await dbSet('df:points', STATE.points);
+}
+async function undoPointsFromTables(result){
+  const debits = [[result.firstTeam, result.firstPoints||0],[result.secondTeam, result.secondPoints||0],[result.thirdTeam, result.thirdPoints||0]];
+  debits.forEach(([team, pts])=>{
+    if(!team) return;
+    const entry = STATE.points.find(p=>p.team===team);
+    if(entry){ entry.points = Math.max(0, (entry.points||0) - pts); }
+  });
+  const touched = creditIndividualPoints(result, -1);
+  if(touched) await dbSet('df:teamMembers', STATE.teamMembers);
+  await dbSet('df:points', STATE.points);
 }
 
 document.addEventListener('click', async (e)=>{
@@ -2359,6 +3733,84 @@ document.addEventListener('click', async (e)=>{
   }
   if(action==='view-member'){ openMemberModal(t.dataset.id); return; }
   if(action==='clear-team-search'){ STATE.teamSearch=''; render(); return; }
+
+  /* ---- individual leaderboard category tabs ---- */
+  if(action==='ind-category'){ STATE.individualCategory = t.dataset.val; render(); return; }
+
+  /* ---- admin: toggle cancelled/inactive events ---- */
+  if(action==='toggle-show-cancelled'){ STATE.showCancelled = !STATE.showCancelled; render(); return; }
+
+  /* ---- event registration link: copy / share ---- */
+  if(action==='copy-reg-link'){
+    const ev = STATE.events.find(x=>x.id===t.dataset.id);
+    if(!ev) return;
+    copyText(eventRegUrl(ev), 'Registration link copied!'); return;
+  }
+  if(action==='share-reg-link'){
+    const ev = STATE.events.find(x=>x.id===t.dataset.id);
+    if(!ev) return;
+    openShareEventModal(ev); return;
+  }
+  if(action==='native-share-reg'){
+    const ev = STATE.events.find(x=>x.id===t.dataset.id);
+    if(!ev || !navigator.share) return;
+    try{ await navigator.share({ title:festName(), text:eventShareText(ev), url:eventRegUrl(ev) }); }
+    catch(err){ /* user cancelled */ }
+    return;
+  }
+
+  /* ---- event status management ---- */
+  if(action==='set-event-status'){
+    const ev = STATE.events.find(x=>x.id===t.dataset.id);
+    if(!ev) return;
+    ev.status = t.dataset.status;
+    if(t.dataset.status==='CANCELLED'){
+      ev.regStatus = 'CANCELLED';
+      ev.cancelledReason = ev.cancelledReason || 'This event has been cancelled by the organiser.';
+    } else if(t.dataset.status==='ACTIVE' && ev.regStatus==='CANCELLED'){
+      ev.regStatus = 'OPEN';
+    }
+    await dbSet('df:events', STATE.events);
+    closeModal(); render(); toast('Event status set to ' + t.dataset.status + '.'); return;
+  }
+
+  /* ---- registration management ---- */
+  if(action==='view-registration'){ openViewRegistrationModal(t.dataset.id); return; }
+  if(action==='edit-registration'){ openEditRegistrationModal(t.dataset.id); return; }
+  if(action==='delete-registration'){
+    if(!confirm('Delete this registration? This cannot be undone.')) return;
+    STATE.registrations = STATE.registrations.filter(x=>x.id!==t.dataset.id);
+    await dbSet('df:registrations', STATE.registrations);
+    closeModal(); render(); toast('Registration deleted.'); return;
+  }
+  if(action==='add-registration'){ openAddRegistrationModal(); return; }
+  if(action==='export-registrations'){ exportRegistrationsCsv(); return; }
+  if(action==='set-registration-status'){
+    const r = STATE.registrations.find(x=>x.id===t.dataset.id);
+    if(!r) return;
+    r.status = t.dataset.status;
+    await dbSet('df:registrations', STATE.registrations);
+    closeModal(); render(); toast('Registration status updated.'); return;
+  }
+
+  /* ---- branding resets ---- */
+  if(action==='reset-logo'){
+    STATE.settings.logoUrl = '';
+    STATE.settings.useDefaultLogo = true;
+    await dbSet('df:settings', STATE.settings);
+    render(); toast('Logo reset to the default mark.'); return;
+  }
+  if(action==='reset-theme'){
+    STATE.settings.theme = Object.assign({}, DEFAULT_FEST_BRANDING.theme);
+    await dbSet('df:settings', STATE.settings);
+    applyTheme(); render(); toast('Theme reset to the default palette.'); return;
+  }
+  if(action==='reset-limits'){
+    STATE.settings.participationLimits = JSON.parse(JSON.stringify(DEFAULT_PARTICIPATION_LIMITS));
+    await dbSet('df:settings', STATE.settings);
+    render(); toast('Participation limits reset to defaults.'); return;
+  }
+  if(action==='clear-result-search'){ STATE.resultFilters.q=''; renderResultsOnly(); return; }
 });
 
 document.addEventListener('submit', async (e)=>{
@@ -2581,11 +4033,84 @@ document.addEventListener('submit', async (e)=>{
     await dbSet('df:teamMembers', STATE.teamMembers);
     closeModal(); render(); toast('Member saved.'); return;
   }
+
+  /* ---- student online registration ---- */
+  if(action==='submit-registration'){
+    const result = await submitRegistration(data);
+    if(result.ok){
+      result.eventSlug = eventSlug(result.event);
+      STATE.regSuccess = result;
+      render();
+      toast('Registration submitted!');
+      return;
+    }
+    toast('Registration could not be submitted:\n' + result.errors.join('\n'));
+    return;
+  }
+
+  /* ---- admin branding / fest details ---- */
+  if(action==='save-logo'){
+    const oldLogoUrl = STATE.settings.logoUrl;
+    data.logoUrl = await storePhotoIfNeeded(data.logoUrl);
+    await maybeDeleteOldBlob(oldLogoUrl, data.logoUrl);
+    STATE.settings.logoUrl = data.logoUrl;
+    STATE.settings.useDefaultLogo = !data.logoUrl;
+    await dbSet('df:settings', STATE.settings);
+    updateBrand(); render(); toast('Logo saved.'); return;
+  }
+  if(action==='save-fest-details'){
+    Object.assign(STATE.settings, data);
+    await dbSet('df:settings', STATE.settings);
+    updateBrand(); render(); toast('Fest details updated.'); return;
+  }
+  if(action==='save-theme'){
+    STATE.settings.theme = Object.assign({}, DEFAULT_FEST_BRANDING.theme, data);
+    await dbSet('df:settings', STATE.settings);
+    applyTheme(); render(); toast('Theme saved.'); return;
+  }
+
+  /* ---- admin participation limits ---- */
+  if(action==='save-participation-limits'){
+    STATE.settings.participationLimits = STATE.settings.participationLimits || {};
+    PARTICIPATION_CATEGORIES.forEach(cat=>{
+      const d = DEFAULT_PARTICIPATION_LIMITS[cat];
+      STATE.settings.participationLimits[cat] = {
+        minStage: Number(data[cat+'|minStage'])||d.minStage,
+        minNonStage: Number(data[cat+'|minNonStage'])||d.minNonStage,
+        maxTotal: Number(data[cat+'|maxTotal'])||d.maxTotal
+      };
+    });
+    await dbSet('df:settings', STATE.settings);
+    render(); toast('Participation limits saved.'); return;
+  }
+
+  /* ---- admin registration (manual add / edit) ---- */
+  if(action==='save-registration'){
+    const id = form.dataset.id;
+    if(id){
+      const r = STATE.registrations.find(x=>x.id===id);
+      if(r){ Object.assign(r, data); await dbSet('df:registrations', STATE.registrations); }
+      closeModal(); render(); toast('Registration updated.'); return;
+    }
+    const result = await submitRegistration(data);
+    if(result.ok){
+      if(result.registration && data.status){
+        result.registration.status = data.status;
+        await dbSet('df:registrations', STATE.registrations);
+      }
+      closeModal(); render(); toast('Registration added!');
+    } else {
+      toast('Could not add registration:\n' + result.errors.join('\n'));
+    }
+    return;
+  }
 });
 
 document.addEventListener('input', (e)=>{
   if(e.target.id==='evSearch'){ STATE.filters.q = e.target.value; renderEventsOnly(); }
   if(e.target.id==='teamSearchInput'){ STATE.teamSearch = e.target.value; renderTeamsOnly(); }
+  if(e.target.id==='resSearch'){ STATE.resultFilters.q = e.target.value; currentRoute()==='results' ? renderResultsOnly() : refreshResultsSearch(); }
+  if(e.target.id==='regAdminSearch'){ STATE.regFilters.q = e.target.value; renderAdminMainOnly(); }
 });
 document.addEventListener('change', (e)=>{
   if(e.target.id==='evCategory'){ STATE.filters.category = e.target.value; renderEventsOnly(); }
@@ -2605,6 +4130,17 @@ document.addEventListener('change', (e)=>{
   }
   if(e.target.id==='evDate'){ STATE.filters.date = e.target.value; renderEventsOnly(); }
   if(e.target.id==='evVenue'){ STATE.filters.venue = e.target.value; renderEventsOnly(); }
+
+  /* ---- results filters ---- */
+  if(e.target.id==='resCategory'){ STATE.resultFilters.category = e.target.value; renderResultsOnly(); }
+  if(e.target.id==='resEvent'){ STATE.resultFilters.event = e.target.value; renderResultsOnly(); }
+  if(e.target.id==='resTeam'){ STATE.resultFilters.team = e.target.value; renderResultsOnly(); }
+
+  /* ---- admin registration filters ---- */
+  if(e.target.id==='regAdminEvent'){ STATE.regFilters.event = e.target.value; renderAdminMainOnly(); }
+  if(e.target.id==='regAdminCategory'){ STATE.regFilters.category = e.target.value; renderAdminMainOnly(); }
+  if(e.target.id==='regAdminTeam'){ STATE.regFilters.team = e.target.value; renderAdminMainOnly(); }
+  if(e.target.id==='regAdminStatus'){ STATE.regFilters.status = e.target.value; renderAdminMainOnly(); }
   if(e.target.dataset && e.target.dataset.action==='set-team-color'){
     const team = e.target.dataset.team;
     STATE.settings.teamColors = STATE.settings.teamColors || {};
@@ -2686,6 +4222,31 @@ function renderTeamsOnly(){
   window.scrollTo(0, scrollY);
   setupRevealObserver();
   const s = document.getElementById('teamSearchInput'); if(s){ s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
+}
+
+function renderResultsOnly(){
+  if(currentRoute()!=='results') return;
+  const app = document.getElementById('app');
+  const scrollY = window.scrollY;
+  app.innerHTML = renderResults();
+  window.scrollTo(0, scrollY);
+  setupRevealObserver();
+  const s = document.getElementById('resSearch'); if(s){ s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
+}
+function refreshResultsSearch(){
+  const sr = document.getElementById('resultsSearchResults');
+  if(sr){ sr.innerHTML = resultsSearchResultsHtml(currentRoute()==='home'); }
+  const rc = document.querySelector('#resultsSearchHost .results-count');
+  if(rc){ rc.innerHTML = resultsSearchCountHtml(); }
+}
+function renderAdminMainOnly(){
+  if(currentRoute()!=='admin') return;
+  const host = document.querySelector('.admin-main');
+  if(!host) return;
+  const scrollY = window.scrollY;
+  host.innerHTML = adminTabContent();
+  window.scrollTo(0, scrollY);
+  const s = document.getElementById('regAdminSearch'); if(s){ s.focus(); s.setSelectionRange(s.value.length, s.value.length); }
 }
 
 function recomputePointsFromResults(){
