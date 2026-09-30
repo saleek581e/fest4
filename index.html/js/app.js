@@ -296,7 +296,7 @@ const KV_KEY_TO_STATE = {
   'df:events':'events', 'df:results':'results', 'df:points':'points',
   'df:highlights':'highlights', 'df:execMembers':'execMembers',
   'df:teamMembers':'teamMembers', 'df:settings':'settings',
-  'df:registrations':'registrations'
+  'df:registrations':'registrations', 'df:participantResults':'participantResults'
 };
 function subscribeLiveSync(){
   if(sb){
@@ -544,7 +544,11 @@ function eventRegClosedReason(ev){
   return '';
 }
 function eventRegCount(ev){
-  return STATE.registrations.filter(r=>r.eventId===ev.id && r.status!=='REJECTED').length;
+  return STATE.registrations.reduce((n,r)=>{
+    if(r.status==='REJECTED') return n;
+    const p = regPrograms(r);
+    return n + ((p.stage.indexOf(ev.id)>=0 || p.nonStage.indexOf(ev.id)>=0) ? 1 : 0);
+  }, 0);
 }
 function eventsOfCategory(cat){ return visibleEvents().filter(e=>e.category===cat); }
 
@@ -697,7 +701,8 @@ function defaultSettings(){
       exec:{type:'color', value:'#FBF7EE'},
       teams:{type:'color', value:'#FBF7EE'},
       about:{type:'color', value:'#FBF7EE'},
-      register:{type:'color', value:'#FBF7EE'}
+      register:{type:'color', value:'#FBF7EE'},
+      program:{type:'color', value:'#FBF7EE'}
     }
   };
 }
@@ -750,13 +755,14 @@ function festNameHtml(size){
 /* ================= GLOBAL STATE ================= */
 const STATE = {
   events: [], results: [], points: [], highlights: [], settings: null,
-  execMembers: null, teamMembers: [], registrations: [],
+  execMembers: null, teamMembers: [], registrations: [], participantResults: [],
   isAdmin: false, adminTab: 'events',
   filters: { q:'', category:'', date:'', venue:'' },
   resultFilters: { q:'', category:'', event:'', team:'' },
   regFilters: { q:'', event:'', category:'', team:'', status:'' },
   regCategory: PARTICIPATION_CATEGORIES[2],   // Senior — shown in the register form progress panel
   regSuccess: null,                          // confirmation payload after a successful submit
+  adminResultSel: { event:'', category:'', byName:{} },  // Admin → Results picker
   individualCategory: PARTICIPATION_CATEGORIES[2],
   winnerFilter: 'all', teamSearch: '', tvViewMode: 'list',
   showCancelled: false, adminTeamSel: ''
@@ -858,6 +864,10 @@ async function boot(){
   if(!registrations){ registrations = []; if(!sb || STATE.isAdmin) await dbSet('df:registrations', registrations); }
   STATE.registrations = Array.isArray(registrations) ? registrations : [];
 
+  let participantResults = await dbGet('df:participantResults');
+  if(!participantResults){ participantResults = []; if(!sb || STATE.isAdmin) await dbSet('df:participantResults', participantResults); }
+  STATE.participantResults = Array.isArray(participantResults) ? participantResults : [];
+
   await runDataMigrations();
   applyTheme();
 
@@ -907,6 +917,7 @@ function brandTextHtml(title){
   return esc(title);
 }
 function updateBrand(){
+  if(!STATE.settings) return; // boot not finished yet (e.g. early live-sync push)
   const nl = document.getElementById('navLogo'); if(nl) nl.innerHTML = brandMarkHtml(30,'nav');
   const fl = document.getElementById('footerLogo'); if(fl) fl.innerHTML = brandMarkHtml(26,'footer');
   const title = STATE.settings.siteTitle || festName();
@@ -949,11 +960,13 @@ function esc(s){ return (s||'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;',
 /* ============================================================
    REGISTRATION ENGINE
    ------------------------------------------------------------
-   The SAME validation runs before the form is rendered and again
-   immediately before the record is written, against a freshly
-   re-read copy of the events + registrations documents. The
-   database is therefore the final authority — editing the HTML or
-   calling the function directly cannot bypass any rule.
+   One student = ONE registration record containing every selected
+   program (stagePrograms[] / nonStagePrograms[]). The SAME validation
+   runs while the student picks programs AND again immediately before
+   the record is written, against a freshly re-read copy of the events
+   + registrations documents. The database is therefore the final
+   authority — editing the HTML or calling the function directly
+   cannot bypass any rule (frontend, save-path and DB-doc level).
    ============================================================ */
 function regIdentity(r){
   return String(r.regNumber||'').trim().toLowerCase();
@@ -968,14 +981,128 @@ function registrationsOfStudent(regNo, category){
     r.status!=='REJECTED'
   );
 }
+/* Normalises a registration's program lists — supports both the new
+   multi-program shape (stagePrograms/nonStagePrograms arrays of event
+   ids) and the legacy one-record-per-event shape (eventId strings),
+   so counting never breaks on documents written by older versions. */
+function regPrograms(r){
+  const stage = Array.isArray(r && r.stagePrograms) ? r.stagePrograms.filter(Boolean) : [];
+  const nonStage = Array.isArray(r && r.nonStagePrograms) ? r.nonStagePrograms.filter(Boolean) : [];
+  if(stage.length || nonStage.length) return { stage: stage.slice(), nonStage: nonStage.slice() };
+  /* legacy: one row per event */
+  if(r && r.eventId){
+    return (String(r.eventType||'')==='Stage') ? { stage:[r.eventId], nonStage:[] } : { stage:[], nonStage:[r.eventId] };
+  }
+  return { stage:[], nonStage:[] };
+}
+/* ============================================================
+   REGISTRATION ↔ RESULTS BRIDGE + TEAM POINTS ENGINE
+   ------------------------------------------------------------
+   Registration → Registered Programs → Participants → Results →
+   Team Points. Results (df:participantResults) hold ONE row per
+   registration × program with the admin-entered points. Team totals
+   (df:points) are ALWAYS derived as the sum of those rows — they are
+   never typed by hand — so editing or deleting any result instantly
+   recalculates the leaderboard.
+   ============================================================ */
+/* Does registration r include program event `evId`? */
+function registeredIn(r, evId){
+  if(!r || !evId) return false;
+  const p = regPrograms(r);
+  return p.stage.indexOf(evId)>=0 || p.nonStage.indexOf(evId)>=0;
+}
+/* Events (ids) that at least one counting registration includes. */
+function registeredEventIds(){
+  const ids = new Set();
+  STATE.registrations.forEach(r=>{
+    if(r.status==='REJECTED') return;
+    regPrograms(r).stage.concat(regPrograms(r).nonStage).forEach(id=>{ if(id) ids.add(id); });
+  });
+  return Array.from(ids);
+}
+/* Display names of registered events, alphabetically — this is the
+   ONLY source of the Admin → Results event list. */
+function registeredResultEvents(){
+  const byName = {};
+  registeredEventIds().forEach(id=>{
+    const ev = STATE.events.find(e=>e.id===id);
+    if(!ev) return;
+    byName[ev.programName || ev.name] = ev.id;
+  });
+  STATE.adminResultSel.byName = byName;
+  return Object.keys(byName).sort();
+}
+/* Categories (in official order) that have registrations for one event. */
+function resultCategoriesForEvent(eventName){
+  if(!eventName) return [];
+  const evId = STATE.adminResultSel.byName[eventName];
+  const cats = [];
+  STATE.registrations.forEach(r=>{
+    if(r.status==='REJECTED') return;
+    if(!registeredIn(r, evId)) return;
+    if(r.category && cats.indexOf(r.category)<0) cats.push(r.category);
+  });
+  return PARTICIPATION_CATEGORIES.filter(c=>cats.indexOf(c)>=0).concat(cats.filter(c=>PARTICIPATION_CATEGORIES.indexOf(c)<0));
+}
+/* Team total = SUM of that team's valid individual participant results. */
+function computeTeamPoints(){
+  const totals = {};
+  (STATE.settings.rosterTeams||[]).forEach(t=>{ totals[t] = 0; });
+  STATE.registrations.forEach(r=>{
+    if(r.status==='REJECTED') return;
+    const team = String(r.team||'').trim();
+    if(!team) return;
+    totals[team] = totals[team] || 0;
+    STATE.participantResults.forEach(pr=>{
+      if(pr.regId !== r.id) return;
+      if(!registeredIn(r, pr.eventId)) return;   // program no longer on the registration
+      totals[team] += Number(pr.points)||0;
+    });
+  });
+  return totals;
+}
+/* Recomputes df:points from participant results and persists BOTH
+   documents — the results document too, so every mutation path that
+   recalculate flows through is durable even if it forgot to save it.
+   Custom point columns entered per team are preserved. */
+async function syncTeamPoints(){
+  await dbSet('df:participantResults', STATE.participantResults);
+  const totals = computeTeamPoints();
+  const next = Object.keys(totals).map(team=>{
+    const old = STATE.points.find(p=>p.team===team) || {};
+    const row = { team, points: totals[team] };
+    (STATE.settings.customPointColumns||[]).forEach(c=>{ if(old[c.key]!==undefined) row[c.key] = old[c.key]; });
+    return row;
+  });
+  STATE.points = next;
+  await dbSet('df:points', next);
+}
+/* Recomputes the RESULTS dropdown data + team points after any
+   registration change (create / edit / delete / status change). */
+async function syncAllDerivedFromRegistrations(){
+  /* drop participant results whose registration or program no longer exists */
+  const validRegIds = new Set(STATE.registrations.map(r=>r.id));
+  const before = STATE.participantResults.length;
+  STATE.participantResults = STATE.participantResults.filter(pr=>{
+    if(!validRegIds.has(pr.regId)) return false;
+    const r = STATE.registrations.find(x=>x.id===pr.regId);
+    return r && r.status!=='REJECTED' && registeredIn(r, pr.eventId);
+  });
+  if(STATE.participantResults.length !== before) await dbSet('df:participantResults', STATE.participantResults);
+  if(STATE.adminResultSel.event && !registeredResultEvents().includes(STATE.adminResultSel.event)){
+    STATE.adminResultSel.event = ''; STATE.adminResultSel.category = '';
+  }
+  await syncTeamPoints();
+}
+
 /* Live participation progress for a student in a category. */
 function participationProgress(regNo, category, freshRegs){
   const lim = limits()[category] || DEFAULT_PARTICIPATION_LIMITS.Senior;
   const pool = freshRegs || STATE.registrations;
   const key = regIdentity({regNumber:regNo});
   const mine = !key ? [] : pool.filter(r=>regIdentity(r)===key && r.category===category && r.status!=='REJECTED');
-  const stage = mine.filter(r=>r.eventType==='Stage').length;
-  const nonStage = mine.filter(r=>r.eventType!=='Stage').length;
+  let stage = 0, nonStage = 0;
+  mine.forEach(r=>{ const p = regPrograms(r); stage += p.stage.length; nonStage += p.nonStage.length; });
   const total = stage + nonStage;
   return {
     category, stage, nonStage, total,
@@ -985,64 +1112,99 @@ function participationProgress(regNo, category, freshRegs){
     stageFull:stage>=lim.maxTotal, nonStageFull:nonStage>=lim.maxTotal
   };
 }
-/* Returns { ok, errors[], warnings[], progress } — errors block the
-   registration, warnings are advisory only. */
+/* Validates a full multi-program submission against a set of events +
+   registrations (the database documents — the final authority).
+   Returns { ok, errors[], progress, events } where errors[] are exact,
+   actionable messages ("Minimum 5 Stage programs and 5 Non-Stage
+   programs are required for Sub Junior."). */
 function validateRegistration(payload, opts){
   opts = opts || {};
   const errors = [];
-  const warnings = [];
   const freshEvents = opts.events || STATE.events;
   const freshRegs = opts.registrations || STATE.registrations;
-
-  const ev = freshEvents.find(e=>e.id===payload.eventId);
-  if(!ev){ errors.push('That event could not be found. Please pick an event from the list.'); return {ok:false, errors, warnings, progress:null}; }
-
-  /* --- event status --- */
-  if(eventStatusOf(ev)==='CANCELLED'){ errors.push('This event has been cancelled and is no longer accepting registrations.'); }
-  if(eventStatusOf(ev)==='INACTIVE'){ errors.push('This event is not open for registration at the moment.'); }
-  const regStatus = eventRegStatus(ev);
-  if(regStatus==='CANCELLED' && eventStatusOf(ev)!=='CANCELLED'){ errors.push('Registration for this event has been cancelled.'); }
-  if(regStatus==='CLOSED'){ errors.push('Online registration for this event is closed. Please contact the coordinator.'); }
-
-  /* --- registration window --- */
-  const today = new Date(); today.setHours(0,0,0,0);
-  if(ev.regStart && new Date(ev.regStart+'T00:00:00') > today) errors.push('Registration for this event opens on ' + fmtDate(ev.regStart) + '.');
-  if(ev.regEnd && new Date(ev.regEnd+'T23:59:59') < today) errors.push('Registration for this event closed on ' + fmtDate(ev.regEnd) + '.');
-
-  /* --- category eligibility --- */
   const category = payload.category;
-  if(!PARTICIPATION_CATEGORIES.includes(category)) errors.push('Please choose a valid category: Sub Junior, Junior, Senior or General.');
+  if(!PARTICIPATION_CATEGORIES.includes(category)){
+    return { ok:false, errors:['Please choose a valid category: Sub Junior, Junior, Senior or General.'], progress:null, events:[] };
+  }
 
   /* --- required fields --- */
   if(!String(payload.name||'').trim()) errors.push('Student name is required.');
   if(!regIdentity(payload)) errors.push('Registration number (chest number) is required.');
   if(!String(payload.team||'').trim()) errors.push('Team / House is required.');
 
-  /* --- capacity --- */
-  const taken = freshRegs.filter(r=>r.eventId===ev.id && r.status!=='REJECTED').length;
-  const cap = Number(ev.maxParticipants);
-  if(cap>0 && taken>=cap) errors.push('This event has reached its maximum of ' + cap + ' participants.');
+  /* --- selected programs --- */
+  const stageIds = Array.isArray(payload.stagePrograms) ? payload.stagePrograms.filter(Boolean) : [];
+  const nonStageIds = Array.isArray(payload.nonStagePrograms) ? payload.nonStagePrograms.filter(Boolean) : [];
+  const uniq = a=>Array.from(new Set(a));
+  const stageSel = uniq(stageIds);
+  const nonStageSel = uniq(nonStageIds);
+  const dupSel = (stageSel.length + nonStageSel.length) !== (stageIds.length + nonStageIds.length);
+  if(dupSel) errors.push('Each program can only be selected once — please review your selection.');
+  if(!stageSel.length && !nonStageSel.length) errors.push('Please select at least one program to register.');
 
-  /* --- duplicate registration --- */
-  const dup = freshRegs.find(r=>r.eventId===ev.id && regIdentity(r)===regIdentity(payload) && r.status!=='REJECTED');
-  if(dup) errors.push('Registration number ' + payload.regNumber + ' is already registered for this event.');
+  /* --- every selected id must be a live, open event in this category --- */
+  const chosen = [];
+  const checkIds = (ids, label)=>{
+    ids.forEach(id=>{
+      const ev = freshEvents.find(e=>e.id===id);
+      if(!ev){ errors.push('One of the selected '+label+' programs could not be found — please review your selection.'); return; }
+      chosen.push(ev);
+      if(ev.category!==category) errors.push((ev.programName||ev.name)+' does not belong to the '+category+' category.');
+      if(eventStatusOf(ev)==='CANCELLED') errors.push((ev.programName||ev.name)+' has been cancelled and is no longer accepting registrations.');
+      else if(eventStatusOf(ev)==='INACTIVE') errors.push((ev.programName||ev.name)+' is not open for registration at the moment.');
+      else {
+        const rs = eventRegStatus(ev);
+        if(rs==='CANCELLED') errors.push('Registration for '+(ev.programName||ev.name)+' has been cancelled.');
+        else if(rs==='CLOSED') errors.push('Online registration for '+(ev.programName||ev.name)+' is closed. Please contact the coordinator.');
+        else {
+          const today = new Date(); today.setHours(0,0,0,0);
+          if(ev.regStart && new Date(ev.regStart+'T00:00:00') > today) errors.push('Registration for '+(ev.programName||ev.name)+' opens on ' + fmtDate(ev.regStart) + '.');
+          if(ev.regEnd && new Date(ev.regEnd+'T23:59:59') < today) errors.push('Registration for '+(ev.programName||ev.name)+' closed on ' + fmtDate(ev.regEnd) + '.');
+        }
+      }
+      /* --- per-event capacity --- */
+      const taken = freshRegs.reduce((n,r)=>{ if(r.id===payload.skipId) return n; const p = regPrograms(r); return n + (p.stage.indexOf(ev.id)>=0 || p.nonStage.indexOf(ev.id)>=0 ? 1 : 0); }, 0);
+      const cap = Number(ev.maxParticipants);
+      if(cap>0 && taken>=cap) errors.push((ev.programName||ev.name)+' has reached its maximum of ' + cap + ' participants.');
+    });
+  };
+  checkIds(stageSel, 'Stage');
+  checkIds(nonStageSel, 'non-stage');
 
-  /* --- participation limits --- */
-  let progress = null;
-  if(PARTICIPATION_CATEGORIES.includes(category)){
-    progress = participationProgress(payload.regNumber, category, freshRegs);
-    if(progress.atMax){
-      errors.push('Maximum program limit reached for your category — ' + category + ' allows ' + progress.maxTotal + ' programs in total.');
-    }
-    if(!progress.stageOk) warnings.push('You have ' + progress.stage + ' of the ' + progress.minStage + ' stage programs required for ' + category + '.');
-    if(!progress.nonStageOk) warnings.push('You have ' + progress.nonStage + ' of the ' + progress.minNonStage + ' non-stage programs required for ' + category + '.');
+  /* --- participation limits: minimums AND maximum --- */
+  const lim = limits()[category] || DEFAULT_PARTICIPATION_LIMITS.Senior;
+  /* count what THIS student already holds in this category (other
+     records of theirs), then add the new selection on top */
+  let priorStage = 0, priorNonStage = 0;
+  const key = regIdentity(payload);
+  const excludeIds = new Set([payload.skipId, opts.excludeId].filter(Boolean));
+  freshRegs.forEach(r=>{
+    if(!r || r.status==='REJECTED' || excludeIds.has(r.id)) return;
+    if(!key || regIdentity(r)!==key || r.category!==category) return;
+    const p = regPrograms(r);
+    priorStage += p.stage.length; priorNonStage += p.nonStage.length;
+  });
+  const stage = priorStage + stageSel.length;
+  const nonStage = priorNonStage + nonStageSel.length;
+  const total = stage + nonStage;
+  const progress = { category, stage, nonStage, total, minStage:lim.minStage, minNonStage:lim.minNonStage, maxTotal:lim.maxTotal,
+    stageOk:stage>=lim.minStage, nonStageOk:nonStage>=lim.minNonStage, atMax:total>=lim.maxTotal };
+
+  if(stage < lim.minStage || nonStage < lim.minNonStage){
+    const missing = [];
+    if(stage < lim.minStage) missing.push(lim.minStage + ' Stage program' + (lim.minStage===1?'':'s'));
+    if(nonStage < lim.minNonStage) missing.push(lim.minNonStage + ' Non-Stage program' + (lim.minNonStage===1?'':'s'));
+    errors.push('Registration cannot be completed. Please select at least ' + missing.join(' and ') + ' for ' + category + '.');
   }
-  return { ok:errors.length===0, errors, warnings, progress, event:ev };
+  if(total > lim.maxTotal){
+    errors.push('Maximum ' + lim.maxTotal + ' programs are allowed for ' + category + '.');
+  }
+
+  return { ok:errors.length===0, errors, warnings:[], progress, events:chosen };
 }
-function nextRegNumber(list, eventCode, category){
-  const prefix = String(eventCode||'EV').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,4) || 'EV';
+function nextRegNumber(list, category){
   const catCode = { 'Sub Junior':'SJ', 'Junior':'JR', 'Senior':'SR' }[category] || 'GN';
-  const base = prefix + '-' + catCode + '-';
+  const base = 'TF26-' + catCode + '-';
   const used = new Set((list||[]).map(r=>String(r.regNo||'')));
   let i = 1;
   while(used.has(base + String(i).padStart(3,'0'))) i++;
@@ -1051,37 +1213,37 @@ function nextRegNumber(list, eventCode, category){
 function makeRegistrationId(){ return 'reg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,7); }
 
 /* The authoritative write path: re-reads both documents, validates
-   against them, then persists. */
+   against them, then persists ONE record per student containing all
+   selected programs. Validation here cannot be bypassed from the
+   browser console or crafted requests — the saved documents win. */
 async function submitRegistration(payload){
   const [freshEvents, freshRegs] = await Promise.all([ dbGet('df:events'), dbGet('df:registrations') ]);
   const events = Array.isArray(freshEvents) && freshEvents.length ? freshEvents : STATE.events;
   const regs = Array.isArray(freshRegs) ? freshRegs : STATE.registrations;
   const check = validateRegistration(payload, { events, registrations:regs });
   if(!check.ok) return check;
-  const ev = check.event;
+  const chosen = check.events || [];
+  const first = chosen[0];
   const record = {
     id: makeRegistrationId(),
-    regNo: nextRegNumber(regs, ev.eventCode, payload.category),
-    eventId: ev.id,
-    eventSlug: eventSlug(ev),
-    eventName: ev.name,
-    eventCode: ev.eventCode || '',
-    eventType: eventTypeOf(ev),
+    regNo: nextRegNumber(regs, payload.category),
     category: payload.category,
     name: String(payload.name||'').trim(),
     regNumber: String(payload.regNumber||'').trim(),
     team: String(payload.team||'').trim(),
-    klass: String(payload.klass||'').trim(),
-    phone: String(payload.phone||'').trim(),
-    email: String(payload.email||'').trim(),
     notes: String(payload.notes||'').trim(),
+    stagePrograms: chosen.filter(e=>eventTypeOf(e)==='Stage').map(e=>e.id),
+    nonStagePrograms: chosen.filter(e=>eventTypeOf(e)!=='Stage').map(e=>e.id),
+    programNames: chosen.map(e=>e.programName||e.name),
+    programCount: chosen.length,
     status: 'PENDING',
     createdAt: new Date().toISOString()
   };
+  if(first){ record.eventSlug = eventSlug(first); }
   const next = regs.concat([record]);
   await dbSet('df:registrations', next);
   STATE.registrations = next;
-  return { ok:true, errors:[], warnings:check.warnings, progress:check.progress, registration:record, event:ev };
+  return { ok:true, errors:[], warnings:[], progress:check.progress, registration:record, event:first, events:chosen };
 }
 
 /* ============================================================
@@ -1191,6 +1353,7 @@ function registerEventDetailsHtml(ev){
     </div>
     ${ev.rules ? `<h4 style="margin:16px 0 6px;font-size:.9rem;">Rules</h4><ul style="font-size:.82rem;color:var(--ink-soft);padding-left:18px;margin:0;">${ev.rules.split('\n').filter(Boolean).map(r=>`<li>${esc(r.trim())}</li>`).join('')}</ul>` : ''}
     <div class="share-row" style="margin-top:16px;">
+      <a class="btn btn-ghost btn-sm" href="#/program/${esc(eventSlug(ev))}">👁 View Program</a>
       <button class="share-btn wa" href="${esc(whatsappShareUrl(eventShareText(ev)))}" target="_blank" rel="noopener">📲 WhatsApp</button>
       <button class="share-btn" data-action="share-reg-link" data-id="${esc(ev.id)}">📤 Share</button>
     </div>
@@ -1248,13 +1411,14 @@ function renderRegister(slug){
   const sel = ev ? ev.id : (events[0] ? events[0].id : '');
   const selEvent = STATE.events.find(e=>e.id===sel) || null;
   const teams = STATE.settings.rosterTeams || [];
+  const regNo0 = '';
 
   return `<section class="section">
     <div class="container">
       <div class="section-head">
         <div class="eyebrow">${esc(festSubtitle())}</div>
         <h2>📝 ${ev ? esc(ev.programName || ev.name) : 'Online Registration'}</h2>
-        <p>${ev ? esc(ev.description || 'Fill the form below to register for this programme.') : 'Choose a category, pick a programme, fill in your details, and submit. Your entry is saved to the database and visible in the admin panel immediately.'}</p>
+        <p>${ev ? esc(ev.description || 'Fill the form below to register for this programme.') : 'Choose your category, tick every program you want to compete in, fill in your details, and submit. One submission covers ALL your programs — your entry is saved to the database and visible in the admin panel immediately.'}</p>
         <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
           ${ev ? `<span class="chip chip-open">${esc(eventTypeOf(ev))}</span><span class="chip chip-stage">${esc(ev.category)}</span>` : ''}
         </div>
@@ -1262,54 +1426,14 @@ function renderRegister(slug){
       ${!open.length ? '<div class="empty-state" style="padding:60px 10px;">No programmes are currently open for registration. Please check back soon or contact the coordinator.</div>' : `
       <div class="reg-grid">
         <div class="reg-form">
-          <form data-action="submit-registration" data-event-id="${esc(sel)}">
+          <form data-action="submit-registration" data-event-id="${esc(sel)}" id="regForm">
             <div class="field">
               <label>Category <span class="req">*</span></label>
               <select name="category" id="regCategorySelect" required>
                 ${PARTICIPATION_CATEGORIES.map(c=>`<option value="${esc(c)}" ${c===cat?'selected':''}>${esc(c)}</option>`).join('')}
               </select>
             </div>
-            <div class="field">
-              <label>Programme <span class="req">*</span></label>
-              <select name="eventId" id="regEvent" required>
-                ${events.length
-                  ? events.map(e=>`<option value="${esc(e.id)}" ${e.id===sel?'selected':''}>${esc(e.name)} — ${esc(eventTypeOf(e))}</option>`).join('')
-                  : `<option value="">— No open programmes in ${esc(cat)} —</option>`}
-              </select>
-            </div>
-            <div class="field-row">
-              <div class="field">
-                <label>Full Name <span class="req">*</span></label>
-                <input type="text" name="name" required placeholder="e.g. AHMED ZAKI" autocomplete="name">
-              </div>
-              <div class="field">
-                <label>Registration No. / Chest No. <span class="req">*</span></label>
-                <input type="text" name="regNumber" id="regNumberInput" required placeholder="e.g. 101" autocomplete="off">
-              </div>
-            </div>
-            <div class="field-row">
-              <div class="field">
-                <label>Team / House <span class="req">*</span></label>
-                <select name="team" required>
-                  <option value="">— Select team —</option>
-                  ${teams.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}
-                </select>
-              </div>
-              <div class="field">
-                <label>Class / Grade</label>
-                <input type="text" name="klass" placeholder="e.g. 9">
-              </div>
-            </div>
-            <div class="field-row">
-              <div class="field">
-                <label>Phone (WhatsApp)</label>
-                <input type="tel" name="phone" placeholder="e.g. +91 98765 43210" autocomplete="tel">
-              </div>
-              <div class="field">
-                <label>Email <span style="font-weight:400;color:var(--ink-soft);">(optional)</span></label>
-                <input type="email" name="email" placeholder="you@example.com" autocomplete="email">
-              </div>
-            </div>
+            <div id="regFormArea">${regFormAreaHtml(cat, regNo0)}</div>
             <div class="field">
               <label>Notes <span style="font-weight:400;color:var(--ink-soft);">(optional)</span></label>
               <textarea name="notes" placeholder="Anything the coordinator should know (e.g. group name, song details)"></textarea>
@@ -1318,11 +1442,11 @@ function renderRegister(slug){
               <button class="btn btn-primary" type="submit">Register Now</button>
               <a class="btn btn-ghost" href="#events">Back to events</a>
             </div>
-            <p class="results-count" style="margin-top:14px;margin-bottom:0;">Duplicate registrations, cancelled events and category program limits are all checked automatically when you submit.</p>
+            <p class="results-count" style="margin-top:14px;margin-bottom:0;">Duplicate registrations, cancelled events and category program limits (minimums and maximum) are all checked automatically when you submit — and again on the server side of the database.</p>
           </form>
         </div>
         <div>
-          ${registrationProgressHtml(cat, '')}
+          <div id="regProgressHost">${registrationProgressHtml(cat, '')}</div>
           <div id="regEventDetailsWrap">${registerEventDetailsHtml(selEvent)}</div>
         </div>
       </div>`}
@@ -1331,32 +1455,131 @@ function renderRegister(slug){
 }
 function renderRegisterSuccess(payload){
   const r = payload.registration, ev = payload.event;
+  const chosenNames = (r.programNames || []).slice();
+  if(!chosenNames.length && ev) chosenNames.push(ev.programName || ev.name);
   return `<section class="section"><div class="container">
     <div class="card reg-done" style="max-width:640px;margin:30px auto;">
       <div class="tick">✓</div>
       <h3>Registration Confirmed</h3>
-      <p style="color:var(--ink-soft);">Your entry for <b>${esc(ev.programName||ev.name)}</b> has been saved and sent to the admin panel.</p>
+      <p style="color:var(--ink-soft);">All <b>${chosenNames.length}</b> of your selected programme${chosenNames.length===1?'':'s'} have been saved and sent to the admin panel.</p>
       <div class="reg-code">${esc(r.regNo)}</div>
       <div class="results-count" style="margin-bottom:18px;">Please note this reference number. Keep a screenshot.</div>
-      <div style="text-align:left;max-width:420px;margin:0 auto;">
-        <div class="event-meta">
+      <div style="text-align:left;max-width:480px;margin:0 auto;">
+        <div class="event-meta" style="flex-wrap:wrap;">
           <span>👤 ${esc(r.name)}</span>
           <span>🪪 ${esc(r.regNumber)}</span>
           <span>🏠 ${esc(r.team)}</span>
-          <span>🎭 ${esc(r.eventType)}</span>
           <span>📂 ${esc(r.category)}</span>
+          <span>🎭 ${chosenNames.filter((_,i)=>(r.stagePrograms||[]).length && i < (r.stagePrograms||[]).length).length} Stage · ${chosenNames.length - chosenNames.filter((_,i)=>(r.stagePrograms||[]).length && i < (r.stagePrograms||[]).length).length} Non-Stage</span>
           <span>🕐 ${new Date(r.createdAt).toLocaleString()}</span>
         </div>
+        <h4 style="margin:14px 0 6px;font-size:.9rem;">Your programs</h4>
+        <ul style="font-size:.85rem;color:var(--ink-soft);padding-left:18px;margin:0;">${chosenNames.map(n=>`<li>${esc(n)}</li>`).join('')}</ul>
       </div>
       <div class="reg-actions" style="margin-top:22px;">
-        <a class="btn btn-primary" href="#/register/${esc(eventSlug(ev))}">Register for another program</a>
+        <a class="btn btn-primary" href="#/register">Register for another program</a>
         <a class="btn btn-ghost" href="#events">Back to events</a>
-        <button class="share-btn" data-action="share-reg-link" data-id="${esc(ev.id)}">📤 Share</button>
+        ${ev ? `<button class="share-btn" data-action="share-reg-link" data-id="${esc(ev.id)}">📤 Share</button>` : ''}
       </div>
     </div>
   </div></section>`;
 }
 
+
+/* The middle of the registration form: student identity + the full
+   Stage / Non-Stage program checklists. Rendered once per category
+   change; every checkbox drives the live counters. */
+function regFormAreaHtml(cat, regNumber){
+  const open = registrableEvents().filter(e=>eventRegWindowOpen(e) && e.category===cat);
+  const stageList = open.filter(e=>eventTypeOf(e)==='Stage');
+  const nonStageList = open.filter(e=>eventTypeOf(e)!=='Stage');
+  const lim = limits()[cat] || { minStage:0, minNonStage:0, maxTotal:12 };
+  const prog = participationProgress(regNumber, cat);
+  return `
+    <div class="field-row">
+      <div class="field">
+        <label>Full Name <span class="req">*</span></label>
+        <input type="text" name="name" id="regNameInput" required placeholder="e.g. AHMED ZAKI" autocomplete="name">
+      </div>
+      <div class="field">
+        <label>Registration No. / Chest No. <span class="req">*</span></label>
+        <input type="text" name="regNumber" id="regNumberInput" required placeholder="e.g. 101" autocomplete="off" value="${esc(regNumber||'')}">
+      </div>
+    </div>
+    <div class="field">
+      <label>Team / House <span class="req">*</span></label>
+      <select name="team" required>
+        <option value="">— Select team —</option>
+        ${(STATE.settings.rosterTeams||[]).map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="reg-limits-note">
+      <b>${esc(cat)} requirements:</b> minimum ${lim.minStage} Stage and ${lim.minNonStage} Non-Stage programs · maximum ${lim.maxTotal} total.
+    </div>
+    <div class="reg-limits-note">
+      ${prog.total ? 'You already hold <b>'+prog.total+'</b> program'+(prog.total===1?'':'s')+' (registered earlier). They count toward your limits.' : 'Tick every program you want to compete in.'}
+    </div>
+    <div class="reg-count-row">
+      <span class="reg-count-chip ${prog.stage>=lim.minStage?'ok':''}" id="regCountStage">🎭 Stage: <b>${prog.stage}</b> / ${lim.minStage} min</span>
+      <span class="reg-count-chip ${prog.nonStage>=lim.minNonStage?'ok':''}" id="regCountNonStage">📝 Non-Stage: <b>${prog.nonStage}</b> / ${lim.minNonStage} min</span>
+      <span class="reg-count-chip ${prog.atMax?'max':''}" id="regCountTotal">Σ Total: <b>${prog.total}</b> / ${lim.maxTotal} max</span>
+    </div>
+    ${stageList.length ? `<h4 class="reg-group-title">🎭 Stage Programs</h4>
+    <div class="reg-checklist" id="regStageChecklist">
+      ${stageList.map(e=>`
+        <label class="reg-check ${prog.atMax?'':'ok'}">
+          <input type="checkbox" name="stagePrograms" value="${esc(e.id)}" data-type="stage">
+          <span class="reg-check-body">
+            <b>${esc(e.programName||e.name)}</b>
+            <small>${esc(e.category)} · ${esc(eventTypeOf(e))} · No. ${esc(e.eventCode||'—')}</small>
+          </span>
+          <a class="reg-check-view" href="#/program/${esc(eventSlug(e))}" title="View program">👁</a>
+        </label>`).join('')}
+    </div>` : `<div class="reg-limits-note">No Stage programs are open in ${esc(cat)} right now.</div>`}
+    ${nonStageList.length ? `<h4 class="reg-group-title">📝 Non-Stage Programs</h4>
+    <div class="reg-checklist" id="regNonStageChecklist">
+      ${nonStageList.map(e=>`
+        <label class="reg-check">
+          <input type="checkbox" name="nonStagePrograms" value="${esc(e.id)}" data-type="nonstage">
+          <span class="reg-check-body">
+            <b>${esc(e.programName||e.name)}</b>
+            <small>${esc(e.category)} · ${esc(eventTypeOf(e))} · No. ${esc(e.eventCode||'—')}</small>
+          </span>
+          <a class="reg-check-view" href="#/program/${esc(eventSlug(e))}" title="View program">👁</a>
+        </label>`).join('')}
+    </div>` : `<div class="reg-limits-note">No Non-Stage programs are open in ${esc(cat)} right now.</div>`}`;
+}
+/* Recounts the ticked programs and refreshes the three counters and
+   the progress panel without re-rendering the form (typing is safe). */
+function updateRegCounters(){
+  const catSel = document.getElementById('regCategorySelect');
+  if(!catSel) return;
+  const cat = catSel.value;
+  const regInput = document.getElementById('regNumberInput');
+  const regNo = regInput ? regInput.value.trim() : '';
+  const lim = limits()[cat] || { minStage:0, minNonStage:0, maxTotal:12 };
+  const checked = document.querySelectorAll('#regFormArea input[type="checkbox"]:checked');
+  let stage = 0, nonStage = 0;
+  checked.forEach(cb=>{ if(cb.dataset.type==='stage') stage++; else nonStage++; });
+  const prior = participationProgress(regNo, cat);
+  stage += prior.stage; nonStage += prior.nonStage;
+  const total = stage + nonStage;
+  const atMax = total >= lim.maxTotal;
+  const cs = document.getElementById('regCountStage');
+  const cn = document.getElementById('regCountNonStage');
+  const ct = document.getElementById('regCountTotal');
+  if(cs){ cs.innerHTML = '🎭 Stage: <b>'+stage+'</b> / '+lim.minStage+' min'; cs.classList.toggle('ok', stage>=lim.minStage); }
+  if(cn){ cn.innerHTML = '📝 Non-Stage: <b>'+nonStage+'</b> / '+lim.minNonStage+' min'; cn.classList.toggle('ok', nonStage>=lim.minNonStage); }
+  if(ct){ ct.innerHTML = 'Σ Total: <b>'+total+'</b> / '+lim.maxTotal+' max'; ct.classList.toggle('max', atMax); }
+  /* Block further ticking once the maximum is reached — the extra
+     program cannot be selected, exactly as specified. */
+  document.querySelectorAll('#regFormArea input[type="checkbox"]:not(:checked)').forEach(cb=>{
+    cb.disabled = atMax;
+    cb.closest('.reg-check').classList.toggle('disabled', atMax);
+  });
+  const host = document.getElementById('regProgressHost');
+  if(host){ host.innerHTML = registrationProgressHtml(cat, regNo); }
+}
 
 /* reveal-on-scroll */
 let revealObserver = null;
@@ -1377,13 +1600,15 @@ function setupRevealObserver(){
 window.addEventListener('hashchange', render);
 function currentRoute(){ return (location.hash||'#home').replace('#','').replace(/^\/+/,''); }
 function normalizeIncomingRoute(){
-  /* /register/slug → #/register/slug  (only when we are on our own path) */
+  /* /register/slug and /program/slug → #/register/slug, #/program/slug
+     (only when we are on our own path) — keeps shared clean links and
+     direct refreshes working. */
   const p = location.pathname || '';
-  const m = p.match(/\/register\/([A-Za-z0-9._~%-]+)\/?$/);
+  const m = p.match(/\/(register|program)\/([A-Za-z0-9._~%-]+)\/?$/);
   if(m && !location.hash){
-    const slug = decodeURIComponent(m[1]);
+    const kind = m[1], slug = decodeURIComponent(m[2]);
     const ev = eventBySlug(slug);
-    location.replace(location.origin + location.pathname.replace(/\/register\/[^/]+\/?$/,'') + '#/register/' + (ev ? eventSlug(ev) : slug));
+    location.replace(location.origin + location.pathname.replace(new RegExp('\\/'+kind+'\\/[^/]+\\/?$'),'') + '#/'+kind+'/' + (ev ? eventSlug(ev) : slug));
   }
 }
 function render(){
@@ -1402,8 +1627,9 @@ function render(){
   });
   document.getElementById('navLinks').classList.remove('open');
   const app = document.getElementById('app');
-  const pageKey = route.indexOf('register')===0 ? 'register' : route;
-  const pageBg = STATE.settings.pageBg[pageKey];
+  if(!STATE.settings){ app.innerHTML = ''; return; } // boot not finished
+  const pageKey = route.indexOf('register')===0 ? 'register' : (route.indexOf('program/')===0 ? 'program' : route);
+  const pageBg = STATE.settings.pageBg && STATE.settings.pageBg[pageKey];
   if(pageBg){
     app.style.background = pageBg.type==='image' ? ('center/cover no-repeat url("'+pageBg.value+'")') : pageBg.value;
   } else {
@@ -1414,6 +1640,9 @@ function render(){
   if(route==='register' || route.indexOf('register/')===0){
     const slug = route.indexOf('register/')===0 ? route.slice('register/'.length).split('?')[0] : '';
     html = renderRegister(decodeURIComponent(slug||''));
+  } else if(route.indexOf('program/')===0){
+    const slug = route.slice('program/'.length).split('?')[0];
+    html = renderProgram(decodeURIComponent(slug||''));
   } else {
     const fn = renderers[route] || renderHome;
     html = fn();
@@ -1608,9 +1837,22 @@ function teamLeaderboardShellHtml(){
    Points come from df:teamMembers (auto-credited from results).
    ============================================================ */
 function individualStandings(category){
+  /* Individual points are derived from participant results (matched by
+     name + team), so they always mirror the latest saved results. */
+  const earned = {};
+  STATE.participantResults.forEach(pr=>{
+    const r = STATE.registrations.find(x=>x.id===pr.regId);
+    if(!r || r.status==='REJECTED') return;
+    if(!registeredIn(r, pr.eventId)) return;
+    const key = String(r.name||'').trim().toLowerCase()+'|'+String(r.team||'').trim().toLowerCase();
+    earned[key] = (earned[key]||0) + (Number(pr.points)||0);
+  });
   return STATE.teamMembers
     .filter(m=>m.category===category)
-    .map(m=>Object.assign({}, m, { _points: Number(m.points)||0 }))
+    .map(m=>{
+      const key = String(m.name||'').trim().toLowerCase()+'|'+String(m.team||'').trim().toLowerCase();
+      return Object.assign({}, m, { _points: Math.max(Number(m.points)||0, earned[key]||0) });
+    })
     .sort((a,b)=>b._points-a._points || String(a.name||'').localeCompare(String(b.name||'')));
 }
 function individualTop3Html(category){
@@ -1718,10 +1960,10 @@ function eventCardHtml(e){
     ${cancelled
       ? `<div class="prog-alert" style="margin-top:10px;">${esc(e.cancelledReason||'This event has been cancelled.')}</div>`
       : `<div class="share-row" style="margin-top:12px;">
+          <a class="btn btn-ghost btn-sm" href="#/program/${esc(eventSlug(e))}">👁 View Program</a>
           ${open
             ? `<a class="btn btn-primary btn-sm" href="#/register/${esc(eventSlug(e))}">Register Now</a>`
             : `<button class="btn btn-ghost btn-sm" disabled>${esc(eventRegClosedReason(e)||'Registration Closed')}</button>`}
-          ${e.rules ? `<button class="btn btn-ghost btn-sm" data-action="view-event-rules" data-id="${esc(e.id)}">📋 Rules</button>` : ''}
           <button class="share-btn" data-action="copy-reg-link" data-id="${esc(e.id)}">📋 Link</button>
           <button class="share-btn" data-action="share-reg-link" data-id="${esc(e.id)}">📤 Share</button>
         </div>`}
@@ -1729,22 +1971,80 @@ function eventCardHtml(e){
 }
 function openEventRulesModal(id){
   const e = STATE.events.find(x=>x.id===id); if(!e) return;
-  const rules = (e.rules||'').split('\n').map(r=>r.trim()).filter(Boolean);
-  showModal(`
-    <button class="modal-close" data-action="close-modal">×</button>
-    <h3>${esc(e.name)}</h3>
-    <p style="font-size:.85rem;color:var(--ink-soft);margin-top:-6px;">${esc(eventTypeOf(e))} · ${esc(e.category)}${isEventCancelled(e)?' · <b style="color:var(--danger)">CANCELLED</b>':''}</p>
-    <h4 style="margin:14px 0 4px;font-size:.95rem;">About</h4>
-    <p style="font-size:.88rem;">${esc(e.description||'No description published for this programme.')}</p>
-    <h4 style="margin:16px 0 8px;font-size:.95rem;">Rules</h4>
-    <ol style="padding-left:20px; display:flex; flex-direction:column; gap:10px; margin:0;">
-      ${rules.map(r=>`<li>${esc(r)}</li>`).join('') || '<li>No specific rules published for this event.</li>'}
-    </ol>
-    <div class="modal-actions">
-      ${isEventLive(e) ? `<a class="btn btn-primary btn-sm" href="#/register/${esc(eventSlug(e))}">Register for this event</a>` : ''}
-    </div>
-  `);
+  location.hash = '#/program/'+eventSlug(e);
 }
+
+/* ============================================================
+   PROGRAM PAGE  (#/program/<slug>) — the full "View Program" page.
+   Falls back through slug → programName → name matching and handles
+   missing/null data gracefully, so it never renders blank (including
+   after a direct URL refresh or a shared clean link).
+   ============================================================ */
+function renderProgram(slug){
+  const s = String(slug||'').toLowerCase();
+  let ev = null;
+  if(s){
+    ev = STATE.events.find(e=>String(e.slug||'').toLowerCase()===s)
+      || STATE.events.find(e=>slugify((e.programName||'')+'-'+(e.category||''))===s)
+      || STATE.events.find(e=>slugify(e.name)===s)
+      || STATE.events.find(e=>slugify(e.programName||'')===s)
+      || STATE.events.find(e=>String(e.name||'').toLowerCase()===s)
+      || STATE.events.find(e=>String(e.programName||'').toLowerCase()===s)
+      || null;
+  }
+  if(!ev){
+    return `<section class="section"><div class="container">
+      <div class="empty-state" style="padding:70px 10px;">
+        <h2 style="font-size:1.4rem;">Program not found</h2>
+        <p>This program may have been removed, renamed or mistyped.</p>
+        <a class="btn btn-primary" href="#events">Browse all programs</a>
+      </div>
+    </div></section>`;
+  }
+  const cancelled = isEventCancelled(ev);
+  const rules = String(ev.rules||'').split('\n').map(r=>r.trim()).filter(Boolean);
+  const taken = eventRegCount(ev);
+  const open = !cancelled && eventRegWindowOpen(ev);
+  return `
+  <section class="section program-page">
+    <div class="container" style="max-width:860px;">
+      <div class="section-head">
+        <div class="eyebrow">Program Details</div>
+        <h2>${esc(ev.programName || ev.name || 'Program')}</h2>
+        <div style="margin-top:12px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap;">
+          <span class="chip chip-stage">${esc(eventTypeOf(ev)||'—')}</span>
+          <span class="chip chip-open">${esc(ev.category||'—')}</span>
+          ${ev.eventCode?`<span class="chip chip-nonstage">No. ${esc(ev.eventCode)}</span>`:''}
+          ${cancelled?'<span class="chip chip-cancelled">CANCELLED</span>':eventStatusChipHtml(ev)}
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:20px;">
+        <div class="event-meta" style="flex-wrap:wrap;">
+          <span>📅 ${ev.date?fmtDate(ev.date):'—'}</span>
+          <span>🕐 ${ev.time?fmtTime(ev.time):'—'}</span>
+          <span>📍 ${esc(ev.venue||'—')}</span>
+          <span>👥 ${taken} registered${ev.maxParticipants?' of '+esc(ev.maxParticipants):''}</span>
+        </div>
+        ${open ? `<div class="reg-actions" style="margin-top:14px;">
+          <a class="btn btn-primary" href="#/register/${esc(eventSlug(ev))}">📝 Register for this program</a>
+        </div>` : (cancelled ? '' : `<div class="prog-alert" style="margin-top:14px;">${esc(eventRegClosedReason(ev)||'Registration for this program is not open right now.')}</div>`)}
+      </div>
+      <div class="card" style="margin-bottom:20px;">
+        <h3 style="margin-top:0;">About this program</h3>
+        <p style="font-size:.9rem;color:var(--ink-soft);">${esc(ev.description || 'No description published for this programme yet.')}</p>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0;">Rules</h3>
+        ${rules.length ? `<ol style="padding-left:20px;display:flex;flex-direction:column;gap:10px;margin:0;">${rules.map(r=>`<li style="font-size:.88rem;color:var(--ink-soft);">${esc(r)}</li>`).join('')}</ol>` : '<p style="font-size:.88rem;color:var(--ink-soft);">No specific rules published for this program yet.</p>'}
+      </div>
+      <div style="text-align:center;margin-top:22px;">
+        <a class="btn btn-ghost" href="#events">← Back to all events</a>
+      </div>
+    </div>
+  </section>`;
+}
+
+/* ================= SCHEDULE ================= */
 
 /* ================= SCHEDULE ================= */
 function renderSchedule(){
@@ -2716,7 +3016,7 @@ function adminRegistrations(){
     if(f.team && r.team!==f.team) return false;
     if(f.status && r.status!==f.status) return false;
     if(q){
-      const hit = [r.name,r.regNumber,r.regNo,r.team,r.eventName,r.klass,r.phone].some(v=>matchText(v,q));
+      const hit = [r.name,r.regNumber,r.regNo,r.team,r.eventName].some(v=>matchText(v,q));
       if(!hit) return false;
     }
     return true;
@@ -2737,7 +3037,7 @@ function adminRegistrations(){
     <div class="search-row">
       <div class="search-input-wrap">
         <span class="ico">🔍</span>
-        <input type="text" id="regAdminSearch" class="search-input" placeholder="Search name, registration no, team, class, phone…" value="${esc(f.q)}">
+        <input type="text" id="regAdminSearch" class="search-input" placeholder="Search name, registration no, team, event…" value="${esc(f.q)}">
       </div>
     </div>
     <div class="filter-row">
@@ -2751,16 +3051,17 @@ function adminRegistrations(){
     <div class="results-count" style="margin-top:12px;margin-bottom:0;">${list.length} of ${STATE.registrations.length} registration${STATE.registrations.length===1?'':'s'}</div>
   </div>
   <div class="table-wrap"><table>
-    <thead><tr><th>Student</th><th>Reg. ID</th><th>Category</th><th>Team</th><th>Event</th><th>Type</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Student</th><th>Reg. ID</th><th>Category</th><th>Team</th><th>Programs</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead>
     <tbody>
-      ${list.map(r=>`
+      ${list.map(r=>{
+        const progs = regPrograms(r);
+        return `
         <tr>
-          <td><b>${esc(r.name||'—')}</b><div class="results-count" style="margin:0;">Chest ${esc(r.regNumber||'—')}${r.klass?' · Class '+esc(r.klass):''}</div></td>
+          <td><b>${esc(r.name||'—')}</b><div class="results-count" style="margin:0;">Chest ${esc(r.regNumber||'—')}</div></td>
           <td class="reg-admin-id">${esc(r.regNo||r.id||'—')}</td>
           <td>${esc(r.category||'—')}</td>
           <td>${esc(r.team||'—')}</td>
-          <td>${esc(r.eventName||'—')}</td>
-          <td><span class="chip ${r.eventType==='Stage'?'chip-stage':'chip-nonstage'}">${esc(r.eventType||'—')}</span></td>
+          <td><span class="chip chip-stage">🎭 ${progs.stage.length}</span> <span class="chip chip-nonstage">📝 ${progs.nonStage.length}</span> <span style="font-size:.75rem;color:var(--ink-soft);">= ${progs.stage.length+progs.nonStage.length}</span></td>
           <td class="reg-admin-id">${r.createdAt?new Date(r.createdAt).toLocaleDateString():'—'}</td>
           <td><span class="chip ${r.status==='APPROVED'?'chip-open':r.status==='REJECTED'?'chip-cancelled':'chip-closed'}">${esc(r.status||'PENDING')}</span></td>
           <td>
@@ -2768,11 +3069,16 @@ function adminRegistrations(){
             <button class="icon-btn" data-action="edit-registration" data-id="${esc(r.id)}">Edit</button>
             <button class="icon-btn" data-action="delete-registration" data-id="${esc(r.id)}">Delete</button>
           </td>
-        </tr>`).join('') || `<tr><td colspan="9" style="color:var(--ink-soft);">No registrations match your filters.</td></tr>`}
+        </tr>`;
+      }).join('') || `<tr><td colspan="8" style="color:var(--ink-soft);">No registrations match your filters.</td></tr>`}
     </tbody>
   </table></div>`;
 }
 function registrationDetailsHtml(r){
+  const progs = regPrograms(r);
+  const nameOf = id=>{ const ev = STATE.events.find(x=>x.id===id); return ev ? (ev.programName||ev.name) : id; };
+  const stageNames = progs.stage.map(nameOf);
+  const nonStageNames = progs.nonStage.map(nameOf);
   return `<div class="card">
     <div class="event-top">
       <div>
@@ -2785,13 +3091,15 @@ function registrationDetailsHtml(r){
       <span>🪪 Chest No.: ${esc(r.regNumber||'—')}</span>
       <span>🏠 Team: ${esc(r.team||'—')}</span>
       <span>📂 Category: ${esc(r.category||'—')}</span>
-      <span>📚 Class: ${esc(r.klass||'—')}</span>
-      <span>📞 Phone: ${esc(r.phone||'—')}</span>
-      <span>✉️ Email: ${esc(r.email||'—')}</span>
-      <span>🎭 Event: ${esc(r.eventName||'—')}</span>
-      <span>🏷️ Event Type: ${esc(r.eventType||'—')}</span>
+      <span>Σ Total Programs: ${progs.stage.length + progs.nonStage.length}</span>
+      <span>🎭 Stage: ${stageNames.length}</span>
+      <span>📝 Non-Stage: ${nonStageNames.length}</span>
       <span>🕐 Registered: ${r.createdAt?new Date(r.createdAt).toLocaleString():'—'}</span>
     </div>
+    <h4 style="margin:14px 0 4px;font-size:.9rem;">🎭 Stage programs</h4>
+    <ul style="font-size:.85rem;color:var(--ink-soft);padding-left:18px;margin:0;">${stageNames.map(n=>`<li>${esc(n)}</li>`).join('') || '<li style="list-style:none;">—</li>'}</ul>
+    <h4 style="margin:14px 0 4px;font-size:.9rem;">📝 Non-Stage programs</h4>
+    <ul style="font-size:.85rem;color:var(--ink-soft);padding-left:18px;margin:0;">${nonStageNames.map(n=>`<li>${esc(n)}</li>`).join('') || '<li style="list-style:none;">—</li>'}</ul>
     ${r.notes?`<p style="font-size:.85rem;margin-top:12px;"><b>Notes:</b> ${esc(r.notes)}</p>`:''}
   </div>`;
 }
@@ -2814,16 +3122,15 @@ function openEditRegistrationModal(id){
     {key:'regNumber',label:'Registration / Chest No.',type:'text'},
     {key:'team',label:'Team / House',type:'select',options:(STATE.settings.rosterTeams||[])},
     {key:'category',label:'Category',type:'select',options:PARTICIPATION_CATEGORIES},
-    {key:'klass',label:'Class / Grade',type:'text'},
-    {key:'phone',label:'Phone',type:'text'},
-    {key:'email',label:'Email',type:'text'},
     {key:'notes',label:'Notes',type:'textarea'},
     {key:'status',label:'Status',type:'select',options:REG_STATUS_VALUES}
   ];
+  const progs = regPrograms(r);
+  const nameOf = id=>{ const ev = STATE.events.find(x=>x.id===id); return ev ? (ev.programName||ev.name) : id; };
   showModal(`
     <button class="modal-close" data-action="close-modal">×</button>
     <h3>Edit Registration — ${esc(r.regNo||r.name||'')}</h3>
-    <div class="notice">Event: ${esc(r.eventName||'—')} · ${esc(r.eventType||'')}. The programme and event type are set when the registration is created and are not editable here.</div>
+    <div class="notice">Registered programs (${progs.stage.length} Stage, ${progs.nonStage.length} Non-Stage): ${esc(progs.stage.concat(progs.nonStage).map(nameOf).join(', ')||'—')}. Programs are managed via the registration form; identity and status can be corrected here.</div>
     <form data-action="save-registration" data-id="${esc(id)}">
       ${fields.map(f=>fieldHtml(f, r[f.key])).join('')}
       <div class="modal-actions"><button type="submit" class="btn btn-primary btn-sm">Save</button></div>
@@ -2832,29 +3139,31 @@ function openEditRegistrationModal(id){
 function openAddRegistrationModal(){
   const openEvents = STATE.events.filter(e=>isEventLive(e));
   if(!openEvents.length){ toast('No open events to register for.'); return; }
-  const ev = openEvents[0];
+  const cat = PARTICIPATION_CATEGORIES[0];
+  const catEvents = openEvents.filter(e=>e.category===cat);
   showModal(`
     <button class="modal-close" data-action="close-modal">×</button>
     <h3>Add Registration (Manual)</h3>
-    <div class="notice">Use this for phone-in or paper registrations. The same category participation limits and duplicate checks are applied as for online submissions.</div>
+    <div class="notice">Use this for phone-in or paper registrations. The same category participation limits (minimums and maximum) and duplicate checks are applied as for online submissions.</div>
     <form data-action="save-registration" data-id="">
-      <div class="field"><label>Event <span class="req">*</span></label>
-        <select name="eventId" id="adminRegEvent" required>
-          ${openEvents.map(e=>`<option value="${esc(e.id)}" ${e.id===ev.id?'selected':''}>${esc(e.name)} — ${esc(eventTypeOf(e))}</option>`).join('')}
-        </select>
-      </div>
+      <div class="field"><label>Category <span class="req">*</span></label><select name="category" id="adminRegCategory">${PARTICIPATION_CATEGORIES.map(c=>`<option value="${esc(c)}" ${c===cat?'selected':''}>${esc(c)}</option>`).join('')}</select></div>
+      <div class="field"><label>Programs <span class="req">*</span></label><div id="adminRegPrograms">${adminRegProgramChecklistHtml(cat, catEvents)}</div></div>
       <div class="field-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
         <div class="field"><label>Student Name <span class="req">*</span></label><input type="text" name="name" required></div>
         <div class="field"><label>Registration / Chest No. <span class="req">*</span></label><input type="text" name="regNumber" required></div>
       </div>
-      <div class="field-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-        <div class="field"><label>Category <span class="req">*</span></label><select name="category" id="adminRegCategory">${PARTICIPATION_CATEGORIES.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select></div>
-        <div class="field"><label>Team / House <span class="req">*</span></label><select name="team" id="adminRegTeam"><option value="">— Select —</option>${(STATE.settings.rosterTeams||[]).map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
-      </div>
+      <div class="field"><label>Team / House <span class="req">*</span></label><select name="team" id="adminRegTeam"><option value="">— Select —</option>${(STATE.settings.rosterTeams||[]).map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select></div>
       <div class="field"><label>Status</label><select name="status">${REG_STATUS_VALUES.map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div>
       <div class="field"><label>Notes</label><textarea name="notes"></textarea></div>
       <div class="modal-actions"><button type="submit" class="btn btn-primary btn-sm">Save Registration</button></div>
     </form>`);
+}
+function adminRegProgramChecklistHtml(cat, catEvents){
+  const list = catEvents && catEvents.length ? catEvents : STATE.events.filter(e=>isEventLive(e) && e.category===cat);
+  const stageList = list.filter(e=>eventTypeOf(e)==='Stage');
+  const nonStageList = list.filter(e=>eventTypeOf(e)!=='Stage');
+  return `${stageList.length ? `<h4 class="reg-group-title">🎭 Stage</h4><div class="reg-checklist">${stageList.map(e=>`<label class="reg-check"><input type="checkbox" name="stagePrograms" value="${esc(e.id)}" data-type="stage"><span class="reg-check-body"><b>${esc(e.programName||e.name)}</b><small>No. ${esc(e.eventCode||'—')}</small></span></label>`).join('')}</div>` : ''}
+  ${nonStageList.length ? `<h4 class="reg-group-title">📝 Non-Stage</h4><div class="reg-checklist">${nonStageList.map(e=>`<label class="reg-check"><input type="checkbox" name="nonStagePrograms" value="${esc(e.id)}" data-type="nonstage"><span class="reg-check-body"><b>${esc(e.programName||e.name)}</b><small>No. ${esc(e.eventCode||'—')}</small></span></label>`).join('')}</div>` : ''}`;
 }
 function exportRegistrationsCsv(){
   const f = STATE.regFilters;
@@ -2864,16 +3173,23 @@ function exportRegistrationsCsv(){
     if(f.category && r.category!==f.category) return false;
     if(f.team && r.team!==f.team) return false;
     if(f.status && r.status!==f.status) return false;
-    if(q && !([r.name,r.regNumber,r.regNo,r.team,r.eventName,r.klass,r.phone].some(v=>matchText(v,q)))) return false;
+    if(q && !([r.name,r.regNumber,r.regNo,r.team,r.eventName].some(v=>matchText(v,q)))) return false;
     return true;
   });
   if(!list.length){ toast('Nothing to export with the current filters.'); return; }
-  const cols = ['Reg ID','Student Name','Chest No','Category','Team','Class','Event','Event Type','Status','Registered On','Phone','Email','Notes'];
+  const nameOf = id=>{ const ev = STATE.events.find(x=>x.id===id); return ev ? (ev.programName||ev.name) : id; };
+  const cols = ['Reg ID','Student Name','Chest No','Category','Team','Stage Programs','Non-Stage Programs','Total Programs','Status','Registered On','Notes'];
   const cell = v => '"' + String(v==null?'':v).replace(/"/g,'""') + '"';
-  const csv = [cols.join(',')].concat(list.map(r=>[
-    r.regNo||r.id, r.name, r.regNumber, r.category, r.team, r.klass,
-    r.eventName, r.eventType, r.status, r.createdAt||'', r.phone, r.email, r.notes
-  ].map(cell).join(','))).join('\r\n');
+  const csv = [cols.join(',')].concat(list.map(r=>{
+    const progs = regPrograms(r);
+    return [
+      r.regNo||r.id, r.name, r.regNumber, r.category, r.team,
+      progs.stage.map(nameOf).join('; '),
+      progs.nonStage.map(nameOf).join('; '),
+      progs.stage.length + progs.nonStage.length,
+      r.status, r.createdAt||'', r.notes
+    ].map(cell).join(',');
+  })).join('\r\n');
   const blob = new Blob(['\ufeff' + csv], {type:'text/csv;charset=utf-8;'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -2937,7 +3253,8 @@ function adminPoints(){
   const sorted = STATE.points.slice().sort((a,b)=>b.points-a.points);
   const cols = STATE.settings.customPointColumns || [];
   return `
-  <div class="admin-toolbar"><h3 style="margin:0;">Points Table</h3><div style="display:flex;gap:8px;"><a href="#tv" class="btn btn-ghost btn-sm">📺 TV Display</a><button class="btn btn-primary btn-sm" data-action="add-points">+ Add Team</button></div></div>
+  <div class="admin-toolbar"><h3 style="margin:0;">Points Table</h3><div style="display:flex;gap:8px;"><a href="#tv" class="btn btn-ghost btn-sm">📺 TV Display</a></div></div>
+  <div class="notice">Team totals are <b>calculated automatically</b> as the sum of each team's individual participant results (Admin → Results). Editing or deleting a result instantly recalculates these numbers — no manual entry.</div>
   <div class="card" style="margin-bottom:20px;">
     <h4 style="margin-top:0;">🎉 Celebration</h4>
     <p style="font-size:.85rem;color:var(--ink-soft);margin-top:0;">Trigger a confetti celebration on any TV Display currently open (e.g. at the venue) — useful for announcing an overall winner or a big milestone. It appears there within a few seconds.</p>
@@ -2958,29 +3275,90 @@ function adminPoints(){
           <td><input type="color" value="${esc(teamColor(p.team))}" title="Change color for ${esc(p.team)}" style="width:26px;height:26px;padding:0;border:none;background:none;cursor:pointer;" data-action="set-team-color" data-team="${esc(p.team)}"></td>
           <td>${esc(p.team)}</td><td class="points-cell">${p.points}</td>
           ${cols.map(c=>`<td>${esc(p[c.key]||'')}</td>`).join('')}
-          <td><button class="icon-btn" data-action="edit-points" data-team="${esc(p.team)}">Edit</button><button class="icon-btn" data-action="delete-points" data-team="${esc(p.team)}">Delete</button></td>
+          <td></td>
         </tr>`).join('')}
     </tbody>
   </table></div>`;
 }
 function adminResults(){
+  const evNames = registeredResultEvents();
   return `
-  <div class="admin-toolbar"><h3 style="margin:0;">Results (${STATE.results.length})</h3><button class="btn btn-primary btn-sm" data-action="add-result">+ Add Result</button></div>
-  <div class="notice">Set point values inside each result (Edit → "Points for 1st/2nd/3rd Place"), then click <b>Apply</b> below to credit those points to each team's total on the Points Table. Already-applied results show <b>Undo</b> instead, in case you need to reverse it.</div>
+  <div class="admin-toolbar"><h3 style="margin:0;">Results (${evNames.length} registered event${evNames.length===1?'':'s'})</h3></div>
+  <div class="notice">Every event that students have registered for appears here automatically — no manual event entry. Pick an event + category, enter each participant's points and save; team totals on the Points Table recalculate instantly.</div>
+  ${!evNames.length ? '<div class="empty-state" style="padding:40px 10px;">No registered events yet. As soon as students register, their events appear here automatically.</div>' : `
+  <div class="search-shell">
+    <div class="filter-row">
+      <select id="resAdminEvent">
+        <option value="">— Select event —</option>
+        ${evNames.map(n=>`<option value="${esc(n)}" ${STATE.adminResultSel.event===n?'selected':''}>${esc(n)}</option>`).join('')}
+      </select>
+      <select id="resAdminCategory">
+        <option value="">— Select category —</option>
+        ${resultCategoriesForEvent(STATE.adminResultSel.event).map(c=>`<option value="${esc(c)}" ${STATE.adminResultSel.category===c?'selected':''}>${esc(c)}</option>`).join('')}
+      </select>
+    </div>
+  </div>
+  <div id="adminResultsEntry">${adminResultsEntryHtml()}</div>`}`;
+}
+/* The point-entry card for one selected event + category. Registered
+   participants appear automatically from the registrations document;
+   the admin only types points. */
+function adminResultsEntryHtml(){
+  const evName = STATE.adminResultSel.event;
+  const cat = STATE.adminResultSel.category;
+  if(!evName || !cat){
+    return '<div class="empty-state" style="padding:30px 10px;">Select an event and a category above — registered participants appear automatically.</div>';
+  }
+  const evId = STATE.adminResultSel.byName[evName];
+  const ev = evId ? STATE.events.find(e=>e.id===evId) : null;
+  const list = STATE.registrations.filter(r=>r.status!=='REJECTED' && r.category===cat && registeredIn(r, evId));
+  if(!list.length){
+    return '<div class="empty-state" style="padding:30px 10px;">No registered participants for this event + category yet.</div>';
+  }
+  return `
+  <div class="card" style="margin-top:16px;">
+    <div class="event-top">
+      <div>
+        <div class="event-cat">Event · ${esc(cat)}</div>
+        <h3 style="margin:0;">${esc(evName)} ${ev?`<span class="chip ${eventTypeOf(ev)==='Stage'?'chip-stage':'chip-nonstage'}">${esc(eventTypeOf(ev))}</span>`:''}</h3>
+      </div>
+    </div>
+    <div class="table-wrap" style="margin-top:14px;"><table>
+      <thead><tr><th>Participant</th><th>Chest No.</th><th>Team</th><th style="width:130px;">Points</th></tr></thead>
+      <tbody>
+        ${list.map(r=>{
+          const pr = STATE.participantResults.find(x=>x.regId===r.id && x.eventId===evId);
+          const pts = pr ? (pr.points||0) : '';
+          return `<tr>
+            <td><b>${esc(r.name||'—')}</b></td>
+            <td class="reg-admin-id">${esc(r.regNumber||'—')}</td>
+            <td>${esc(r.team||'—')}</td>
+            <td><input type="number" min="0" class="res-points-input" data-reg-id="${esc(r.id)}" value="${pts}" placeholder="—"></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>
+    <div class="reg-actions" style="margin-top:14px;">
+      <button class="btn btn-primary btn-sm" data-action="save-participant-points">💾 Save Points</button>
+      <span class="results-count" style="margin:0;">Points save straight to the database — team totals recalculate automatically.</span>
+    </div>
+  </div>`;
+}
+function adminWinnerAnnouncementsHtml(){
+  return `
+  <h3 style="margin-top:30px;">📣 Winner Announcements (${STATE.results.length})</h3>
+  <div class="notice">Optional podium announcements (1st / 2nd / 3rd) shown on the public Results page and Winners Gallery. These do NOT affect team points — team totals come from the participant points above automatically.</div>
+  <div style="margin-bottom:12px;"><button class="btn btn-primary btn-sm" data-action="add-result">+ Add Announcement</button></div>
   <div class="table-wrap"><table>
-    <thead><tr><th>Event</th><th>Date</th><th>1st</th><th>2nd</th><th>3rd</th><th>Points</th><th></th></tr></thead>
+    <thead><tr><th>Event</th><th>Date</th><th>1st</th><th>2nd</th><th>3rd</th><th></th></tr></thead>
     <tbody>
       ${STATE.results.map(r=>`
         <tr>
           <td>${esc(r.eventName)}</td><td>${r.date}</td><td>${esc(r.firstWinner || r.firstTeam)}</td><td>${esc(r.secondWinner || r.secondTeam)}</td><td>${esc(r.thirdWinner || r.thirdTeam)}</td>
-          <td>${r.firstPoints||0}/${r.secondPoints||0}/${r.thirdPoints||0}${r.pointsApplied?' <span class="badge badge-completed">Applied</span>':''}</td>
           <td>
-            ${r.pointsApplied
-              ? `<button class="icon-btn" data-action="undo-apply-points" data-id="${r.id}">Undo</button>`
-              : `<button class="icon-btn" data-action="apply-points" data-id="${r.id}">Apply</button>`}
             <button class="icon-btn" data-action="edit-result" data-id="${r.id}">Edit</button><button class="icon-btn" data-action="delete-result" data-id="${r.id}">Delete</button>
           </td>
-        </tr>`).join('')}
+        </tr>`).join('') || '<tr><td colspan="6" style="color:var(--ink-soft);">No announcements yet.</td></tr>'}
     </tbody>
   </table></div>`;
 }
@@ -3355,7 +3733,7 @@ function openResultModal(id){
   showModal(`
     <button class="modal-close" data-action="close-modal">×</button>
     <h3>${isEdit?'Edit':'Add'} Result</h3>
-    <div class="notice">Upload a photo directly from your device, or paste a photo URL instead. Leave blank to auto-generate a placeholder avatar. Set how many points each placement is worth — then use "Apply to Points Table" from the Results list to credit those points to each team's total.</div>
+    <div class="notice">Announces the podium for the public Results page and Winners Gallery. Participant points for the team leaderboard are entered separately in the Registered Results section above.</div>
     <form data-action="save-result" data-id="${id||''}">
       ${RESULT_FIELDS.map(f=>fieldHtml(f, r[f.key])).join('')}
       <div class="modal-actions">
@@ -3644,16 +4022,15 @@ document.addEventListener('click', async (e)=>{
   if(action==='add-event'){ openEventModal(null); return; }
   if(action==='edit-event'){ openEventModal(t.dataset.id); return; }
   if(action==='delete-event'){
-    if(!confirm('Delete this event? This cannot be undone.')) return;
+    if(!confirm('Delete this event? Participant results for it will be recalculated.')) return;
     STATE.events = STATE.events.filter(x=>x.id!==t.dataset.id);
     await dbSet('df:events', STATE.events);
+    await syncAllDerivedFromRegistrations();
     closeModal(); render(); toast('Event deleted.'); return;
   }
 
-  if(action==='add-points'){ openPointsModal(null); return; }
-  if(action==='edit-points'){ openPointsModal(t.dataset.team); return; }
   if(action==='delete-points'){
-    if(!confirm('Remove this team from the points table?')) return;
+    if(!confirm('Remove this team from the points table? It will reappear with its calculated total on the next recalculation.')) return;
     STATE.points = STATE.points.filter(x=>x.team!==t.dataset.team);
     await dbSet('df:points', STATE.points);
     render(); toast('Team removed.'); return;
@@ -3662,41 +4039,39 @@ document.addEventListener('click', async (e)=>{
   if(action==='add-result'){ openResultModal(null); return; }
   if(action==='edit-result'){ openResultModal(t.dataset.id); return; }
   if(action==='delete-result'){
-    if(!confirm('Delete this result?')) return;
+    if(!confirm('Delete this winner announcement?')) return;
     const r = STATE.results.find(x=>x.id===t.dataset.id);
     if(r){ for(const k of ['firstPhoto','secondPhoto','thirdPhoto']){ await maybeDeleteOldBlob(r[k], null); } }
     STATE.results = STATE.results.filter(x=>x.id!==t.dataset.id);
     await dbSet('df:results', STATE.results);
-    closeModal(); render(); toast('Result deleted.'); return;
+    closeModal(); render(); toast('Announcement deleted.'); return;
   }
-  if(action==='apply-points'){
-    const r = STATE.results.find(x=>x.id===t.dataset.id);
-    if(!r || r.pointsApplied) return;
-    const credits = [[r.firstTeam, r.firstPoints||0],[r.secondTeam, r.secondPoints||0],[r.thirdTeam, r.thirdPoints||0]];
-    credits.forEach(([team, pts])=>{
-      if(!team) return;
-      let entry = STATE.points.find(p=>p.team===team);
-      if(!entry){ entry = { team, points:0 }; STATE.points.push(entry); }
-      entry.points = (entry.points||0) + pts;
+  if(action==='save-participant-points'){
+    const evName = STATE.adminResultSel.event;
+    const evId = STATE.adminResultSel.byName[evName];
+    if(!evId){ toast('Select an event first.'); return; }
+    const inputs = document.querySelectorAll('#adminResultsEntry .res-points-input');
+    inputs.forEach(inp=>{
+      const regId = inp.dataset.regId;
+      const raw = String(inp.value).trim();
+      const pts = raw==='' ? null : Math.max(0, Number(raw)||0);
+      const idx = STATE.participantResults.findIndex(x=>x.regId===regId && x.eventId===evId);
+      if(pts===null){ if(idx>=0) STATE.participantResults.splice(idx,1); return; }
+      if(idx>=0) STATE.participantResults[idx].points = pts;
+      else {
+        const r = STATE.registrations.find(x=>x.id===regId);
+        STATE.participantResults.push({
+          id: 'pr-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,6),
+          regId, eventId: evId, points: pts,
+          team: r ? r.team : '', category: r ? r.category : '', updatedAt: new Date().toISOString()
+        });
+      }
     });
-    r.pointsApplied = true;
-    await dbSet('df:results', STATE.results);
-    await dbSet('df:points', STATE.points);
-    render(); toast('Points applied to the Points Table.'); return;
-  }
-  if(action==='undo-apply-points'){
-    const r = STATE.results.find(x=>x.id===t.dataset.id);
-    if(!r || !r.pointsApplied) return;
-    const debits = [[r.firstTeam, r.firstPoints||0],[r.secondTeam, r.secondPoints||0],[r.thirdTeam, r.thirdPoints||0]];
-    debits.forEach(([team, pts])=>{
-      if(!team) return;
-      const entry = STATE.points.find(p=>p.team===team);
-      if(entry){ entry.points = Math.max(0, (entry.points||0) - pts); }
-    });
-    r.pointsApplied = false;
-    await dbSet('df:results', STATE.results);
-    await dbSet('df:points', STATE.points);
-    render(); toast('Points undone.'); return;
+    await dbSet('df:participantResults', STATE.participantResults);
+    await syncTeamPoints();
+    renderAdminMainOnly();
+    toast('Points saved — team totals recalculated.');
+    return;
   }
 
   if(action==='add-highlight'){ openHighlightModal(null); return; }
@@ -3799,9 +4174,10 @@ document.addEventListener('click', async (e)=>{
   if(action==='view-registration'){ openViewRegistrationModal(t.dataset.id); return; }
   if(action==='edit-registration'){ openEditRegistrationModal(t.dataset.id); return; }
   if(action==='delete-registration'){
-    if(!confirm('Delete this registration? This cannot be undone.')) return;
+    if(!confirm('Delete this registration? Its participant results will be removed and team points recalculated.')) return;
     STATE.registrations = STATE.registrations.filter(x=>x.id!==t.dataset.id);
     await dbSet('df:registrations', STATE.registrations);
+    await syncAllDerivedFromRegistrations();
     closeModal(); render(); toast('Registration deleted.'); return;
   }
   if(action==='add-registration'){ openAddRegistrationModal(); return; }
@@ -3811,6 +4187,7 @@ document.addEventListener('click', async (e)=>{
     if(!r) return;
     r.status = t.dataset.status;
     await dbSet('df:registrations', STATE.registrations);
+    await syncAllDerivedFromRegistrations();
     closeModal(); render(); toast('Registration status updated.'); return;
   }
 
@@ -3900,6 +4277,7 @@ document.addEventListener('submit', async (e)=>{
   }
 
   if(action==='save-result'){
+    /* legacy podium announcements (1st/2nd/3rd) — public Results page */
     const id = form.dataset.id;
     ['firstPhoto','secondPhoto','thirdPhoto'].forEach((k,i)=>{
       if(!data[k]){
@@ -3922,7 +4300,7 @@ document.addEventListener('submit', async (e)=>{
       STATE.results.push({ id:'res-'+Date.now(), pointsApplied:false, ...data });
     }
     await dbSet('df:results', STATE.results);
-    closeModal(); render(); toast('Result saved — use Apply in the Results list to credit points.'); return;
+    closeModal(); render(); toast('Result announcement saved.'); return;
   }
 
   if(action==='save-highlight'){
@@ -4053,15 +4431,28 @@ document.addEventListener('submit', async (e)=>{
 
   /* ---- student online registration ---- */
   if(action==='submit-registration'){
+    /* checkbox groups → arrays (the form payload is multi-program) */
+    const formEl = document.getElementById('regForm');
+    const checked = formEl ? Array.from(formEl.querySelectorAll('input[type="checkbox"]:checked')) : [];
+    data.stagePrograms = checked.filter(cb=>cb.dataset.type==='stage').map(cb=>cb.value);
+    data.nonStagePrograms = checked.filter(cb=>cb.dataset.type!=='stage').map(cb=>cb.value);
     const result = await submitRegistration(data);
     if(result.ok){
-      result.eventSlug = eventSlug(result.event);
+      result.eventSlug = result.event ? eventSlug(result.event) : (result.registration.eventSlug || '');
       STATE.regSuccess = result;
       render();
       toast('Registration submitted!');
       return;
     }
-    toast('Registration could not be submitted:\n' + result.errors.join('\n'));
+    /* clear, blocking popup — exactly what is missing / wrong */
+    showModal(`
+      <button class="modal-close" data-action="close-modal">×</button>
+      <h3 style="text-align:center;">⚠ Registration cannot be completed</h3>
+      <div class="prog-alert" style="margin-top:6px;">${result.errors.map(e=>esc(e)).join('<br>')}</div>
+      <div class="modal-actions" style="justify-content:center;margin-top:16px;">
+        <button type="button" class="btn btn-primary btn-sm" data-action="close-modal">Back to form</button>
+      </div>
+    `);
     return;
   }
 
@@ -4106,9 +4497,22 @@ document.addEventListener('submit', async (e)=>{
     const id = form.dataset.id;
     if(id){
       const r = STATE.registrations.find(x=>x.id===id);
-      if(r){ Object.assign(r, data); await dbSet('df:registrations', STATE.registrations); }
+      if(r){
+        const oldCategory = r.category, oldRegNo = r.regNumber;
+        Object.assign(r, {
+          name: String(data.name||'').trim(), regNumber: String(data.regNumber||'').trim(),
+          team: String(data.team||'').trim(), category: data.category || r.category,
+          notes: String(data.notes||'').trim(), status: data.status || r.status
+        });
+        await dbSet('df:registrations', STATE.registrations);
+        await syncAllDerivedFromRegistrations();
+      }
       closeModal(); render(); toast('Registration updated.'); return;
     }
+    /* manual add: collect the ticked programs from the checklist */
+    const checked = Array.from(form.querySelectorAll('input[type="checkbox"]:checked'));
+    data.stagePrograms = checked.filter(cb=>cb.dataset.type==='stage').map(cb=>cb.value);
+    data.nonStagePrograms = checked.filter(cb=>cb.dataset.type!=='stage').map(cb=>cb.value);
     const result = await submitRegistration(data);
     if(result.ok){
       if(result.registration && data.status){
@@ -4117,7 +4521,14 @@ document.addEventListener('submit', async (e)=>{
       }
       closeModal(); render(); toast('Registration added!');
     } else {
-      toast('Could not add registration:\n' + result.errors.join('\n'));
+      showModal(`
+        <button class="modal-close" data-action="close-modal">×</button>
+        <h3 style="text-align:center;">⚠ Could not add registration</h3>
+        <div class="prog-alert" style="margin-top:6px;">${result.errors.map(e=>esc(e)).join('<br>')}</div>
+        <div class="modal-actions" style="justify-content:center;margin-top:16px;">
+          <button type="button" class="btn btn-primary btn-sm" data-action="close-modal">Back</button>
+        </div>
+      `);
     }
     return;
   }
@@ -4128,6 +4539,7 @@ document.addEventListener('input', (e)=>{
   if(e.target.id==='teamSearchInput'){ STATE.teamSearch = e.target.value; renderTeamsOnly(); }
   if(e.target.id==='resSearch'){ STATE.resultFilters.q = e.target.value; currentRoute()==='results' ? renderResultsOnly() : refreshResultsSearch(); }
   if(e.target.id==='regAdminSearch'){ STATE.regFilters.q = e.target.value; renderAdminMainOnly(); }
+  if(e.target.matches && e.target.matches('#regFormArea input[type="checkbox"]')){ updateRegCounters(); }
 });
 document.addEventListener('change', (e)=>{
   if(e.target.id==='evCategory'){ STATE.filters.category = e.target.value; renderEventsOnly(); }
@@ -4153,35 +4565,31 @@ document.addEventListener('change', (e)=>{
   if(e.target.id==='resEvent'){ STATE.resultFilters.event = e.target.value; renderResultsOnly(); }
   if(e.target.id==='resTeam'){ STATE.resultFilters.team = e.target.value; renderResultsOnly(); }
 
+  /* ---- admin results entry pickers ---- */
+  if(e.target.id==='resAdminEvent'){
+    STATE.adminResultSel.event = e.target.value;
+    STATE.adminResultSel.category = '';
+    renderAdminMainOnly();
+  }
+  if(e.target.id==='resAdminCategory'){
+    STATE.adminResultSel.category = e.target.value;
+    renderAdminMainOnly();
+  }
+
   /* ---- admin registration filters ---- */
   if(e.target.id==='regAdminEvent'){ STATE.regFilters.event = e.target.value; renderAdminMainOnly(); }
   if(e.target.id==='regAdminCategory'){ STATE.regFilters.category = e.target.value; renderAdminMainOnly(); }
   if(e.target.id==='regAdminTeam'){ STATE.regFilters.team = e.target.value; renderAdminMainOnly(); }
-  if(e.target.id==='regAdminStatus'){ STATE.regFilters.status = e.target.value; renderAdminMainOnly(); }
-
-  /* ---- student registration form: category drives the programme list ---- */
+  if(e.target.id==='regAdminStatus'){ STATE.regFilters.status = e.target.value; renderAdminMainOnly(); }  /* ---- student registration form: category drives the program checklists ---- */
   if(e.target.id==='regCategorySelect'){
     const cat = e.target.value;
     STATE.regCategory = cat;
-    const evSel = document.getElementById('regEvent');
-    const catEvents = registrableEvents().filter(x=>eventRegWindowOpen(x) && x.category===cat);
-    if(evSel){
-      evSel.innerHTML = catEvents.length
-        ? catEvents.map(x=>`<option value="${esc(x.id)}">${esc(x.name)} — ${esc(eventTypeOf(x))}</option>`).join('')
-        : `<option value="">— No open programmes in ${esc(cat)} —</option>`;
-      if(catEvents.length) evSel.value = catEvents[0].id;
-      const form = evSel.closest('form');
-      if(form) form.dataset.eventId = evSel.value;
-    }
+    const area = document.getElementById('regFormArea');
+    if(area) area.innerHTML = regFormAreaHtml(cat, '');
     const prog = document.getElementById('regProgressHost');
-    if(prog) prog.outerHTML = registrationProgressHtml(cat, '');
-    updateRegEventDetails();
+    if(prog) prog.innerHTML = registrationProgressHtml(cat, '');
   }
-  if(e.target.id==='regEvent'){
-    const form = e.target.closest('form');
-    if(form) form.dataset.eventId = e.target.value;
-    updateRegEventDetails();
-  }
+  if(e.target.id==='regNumberInput'){ updateRegCounters(); }
   if(e.target.dataset && e.target.dataset.action==='set-team-color'){
     const team = e.target.dataset.team;
     STATE.settings.teamColors = STATE.settings.teamColors || {};
